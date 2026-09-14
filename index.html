@@ -55,7 +55,7 @@ const COLORS = {
   navy: "#123A63", navyDark: "#0C2A49", green: "#2F6B47", greenLight: "#E4F0E7",
   gold: "#E8B429", amber: "#B8730E", amberLight: "#F6E8D4", red: "#B23A2E",
   redLight: "#F6E1DE", bg: "#F5F3EE", surface: "#FFFFFF", text: "#22262B",
-  textMuted: "#767D87", border: "#E7E2D6",
+  textMuted: "#767D87", border: "#E7E2D6", exento: "#2E6E8E", exentoLight: "#DCEAF0",
 };
 const DISPLAY_FONT = "'Barlow Condensed', sans-serif";
 const BODY_FONT = "'Inter', sans-serif";
@@ -85,7 +85,8 @@ function mapSocioRow(row) {
     whatsapp: row.whatsapp, domicilio: row.domicilio, tipo: row.tipo,
     grupoId: row.grupo_id, esTitular: row.es_titular, grupoNombre: row.grupo_nombre,
     fechaAlta: row.fecha_alta, cuota: Number(row.cuota), estado: row.estado,
-    foto: row.foto_url, historialTipo: [], historialCambios: [], pagos: [],
+    foto: row.foto_url, eximido: !!row.eximido, createdAt: row.created_at,
+    historialTipo: [], historialCambios: [], pagos: [],
   };
 }
 
@@ -98,10 +99,13 @@ function pagosEfectivos(socio, socios) {
   return socio.pagos;
 }
 function estadoCuota(socio, socios) {
+  if (socio.eximido) return { estado: "Eximido", meses: 0, mesesLista: [], color: COLORS.exento, bg: COLORS.exentoLight };
   const pagos = pagosEfectivos(socio, socios);
   const set = new Set(pagos.map((p) => `${p.anio}-${p.mes}`));
   const pagado = (mes, anio) => set.has(`${anio}-${mes}`);
-  const alta = new Date(socio.fechaAlta);
+  // Se usa la fecha real de carga en el sistema (no la fecha de alta, que es editable
+  // y puede ser histórica) para no generar deuda retroactiva por meses previos a la carga.
+  const alta = new Date(socio.createdAt || socio.fechaAlta);
   const altaYM = alta.getFullYear() * 12 + alta.getMonth();
   let meses = 0;
   const mesesLista = [];
@@ -127,6 +131,7 @@ function formatMesesLista(lista) {
 function iconoEstado(estado) {
   if (estado === "Al día") return CheckCircle2;
   if (estado === "Pendiente") return Clock;
+  if (estado === "Eximido") return ShieldCheck;
   return AlertTriangle;
 }
 
@@ -282,7 +287,7 @@ function LoginScreen({ notify }) {
         <div style={{ color: "rgba(255,255,255,0.75)", fontSize: 13.5, marginTop: 8, maxWidth: 280 }}>
           Te mandamos un mail para confirmar tu cuenta. Confirmalo y después volvé acá para iniciar sesión.
         </div>
-        <button onClick={() => setAvisoConfirmacion(false)} style={{ marginTop: 20, color: COLORS.gold, fontWeight: 700, background: "none", border: "none" }}>Volver</button>
+        <button onClick={() => setAvisoConfirmacion(false)} style={{ marginTop: 20, color: COLORS.green, fontWeight: 700, background: "none", border: "none" }}>Volver</button>
       </div>
     );
   }
@@ -291,19 +296,19 @@ function LoginScreen({ notify }) {
     <div style={{ minHeight: "100vh", background: `linear-gradient(180deg, ${COLORS.navy}, ${COLORS.navyDark})`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 28, fontFamily: BODY_FONT }}>
       <Crest size={84} />
       <div style={{ fontFamily: DISPLAY_FONT, color: "#fff", fontSize: 28, fontWeight: 700, marginTop: 14, letterSpacing: 0.5, textAlign: "center" }}>PUNTA ALTA RUGBY CLUB</div>
-      <div style={{ color: COLORS.gold, fontSize: 13, marginTop: 2, marginBottom: 30, fontWeight: 600 }}>Sistema de gestión de socios</div>
+      <div style={{ color: COLORS.green, fontSize: 13, marginTop: 2, marginBottom: 30, fontWeight: 600 }}>Sistema de gestión de socios</div>
 
       <div style={{ width: "100%", maxWidth: 340, background: "rgba(255,255,255,0.06)", borderRadius: 18, padding: 18 }}>
         <div className="flex gap-2" style={{ marginBottom: 16 }}>
-          <button onClick={() => setModo("login")} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: modo === "login" ? COLORS.gold : "rgba(255,255,255,0.1)", color: modo === "login" ? COLORS.navyDark : "#fff", border: "none" }}>Ingresar</button>
-          <button onClick={() => setModo("signup")} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: modo === "signup" ? COLORS.gold : "rgba(255,255,255,0.1)", color: modo === "signup" ? COLORS.navyDark : "#fff", border: "none" }}>Crear cuenta</button>
+          <button onClick={() => setModo("login")} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: modo === "login" ? COLORS.green : "rgba(255,255,255,0.1)", color: "#fff", border: "none" }}>Ingresar</button>
+          <button onClick={() => setModo("signup")} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: modo === "signup" ? COLORS.green : "rgba(255,255,255,0.1)", color: "#fff", border: "none" }}>Crear cuenta</button>
         </div>
         <label style={{ color: "#fff", fontSize: 12.5, opacity: 0.85 }}>Mail</label>
         <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" className="w-full" style={{ background: "#fff", borderRadius: 10, padding: "10px", marginTop: 6, marginBottom: 12, fontSize: 14, border: "none" }} />
         <label style={{ color: "#fff", fontSize: 12.5, opacity: 0.85 }}>Contraseña</label>
         <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" className="w-full" style={{ background: "#fff", borderRadius: 10, padding: "10px", marginTop: 6, marginBottom: 16, fontSize: 14, border: "none" }} onKeyDown={(e) => e.key === "Enter" && (modo === "login" ? entrar() : crearCuenta())} />
         {modo === "login" ? (
-          <button disabled={cargando} onClick={entrar} className="w-full" style={{ background: COLORS.gold, color: COLORS.navyDark, fontWeight: 700, padding: "13px 0", borderRadius: 12, fontSize: 15, border: "none", opacity: cargando ? 0.7 : 1 }}>
+          <button disabled={cargando} onClick={entrar} className="w-full" style={{ background: COLORS.green, color: "#fff", fontWeight: 700, padding: "13px 0", borderRadius: 12, fontSize: 15, border: "none", opacity: cargando ? 0.7 : 1 }}>
             {cargando ? "Ingresando..." : "Ingresar"}
           </button>
         ) : (
@@ -373,7 +378,7 @@ function SinAcceso({ onExit }) {
 function AdminDashboard({ socios, onOpenNotif, onCompose, onExit }) {
   const activos = socios.filter((s) => s.estado === "Activo");
   const conteo = { "Al día": 0, "Pendiente": 0, "Deudor": 0 };
-  activos.forEach((s) => { conteo[estadoCuota(s, socios).estado]++; });
+  activos.forEach((s) => { const e = estadoCuota(s, socios).estado; if (conteo[e] !== undefined) conteo[e]++; });
 
   const pagosRecientes = [];
   activos.forEach((s) => {
@@ -433,7 +438,7 @@ function AdminDashboard({ socios, onOpenNotif, onCompose, onExit }) {
 /* ---------- ADMIN: Nuevo socio ---------- */
 function NuevoSocioModal({ socios, cuotaConfig, onClose, notify, onChanged }) {
   const nextId = socios.length ? Math.max(...socios.map((s) => s.id)) + 1 : 1;
-  const [form, setForm] = useState({ id: nextId, nombre: "", apellido: "", dni: "", whatsapp: "", domicilio: "", tipo: "Individual", grupoNombre: "", fechaAlta: new Date().toISOString().slice(0, 10), cuota: cuotaConfig.Individual });
+  const [form, setForm] = useState({ id: nextId, nombre: "", apellido: "", dni: "", whatsapp: "", domicilio: "", tipo: "Individual", grupoNombre: "", fechaAlta: new Date().toISOString().slice(0, 10), cuota: cuotaConfig.Individual, eximido: false });
   const [guardando, setGuardando] = useState(false);
 
   const onTipoChange = (tipo) => setForm({ ...form, tipo, cuota: cuotaConfig[tipo] });
@@ -446,7 +451,7 @@ function NuevoSocioModal({ socios, cuotaConfig, onClose, notify, onChanged }) {
       whatsapp: form.whatsapp, domicilio: form.domicilio, tipo: form.tipo, cuota: Number(form.cuota),
       estado: "Activo", grupo_id: form.tipo === "Grupal" ? `g${form.id}` : null,
       es_titular: form.tipo === "Grupal", grupo_nombre: form.tipo === "Grupal" ? form.grupoNombre : null,
-      fecha_alta: form.fechaAlta,
+      fecha_alta: form.fechaAlta, eximido: !!form.eximido,
     });
     if (error) { setGuardando(false); notify("Error: " + error.message); return; }
     await supabase.from("historial_tipo").insert({ socio_id: Number(form.id), tipo: form.tipo, desde: form.fechaAlta });
@@ -477,6 +482,10 @@ function NuevoSocioModal({ socios, cuotaConfig, onClose, notify, onChanged }) {
           <Field label="Fecha de alta"><input type="date" style={inputStyle} value={form.fechaAlta} onChange={(e) => setForm({ ...form, fechaAlta: e.target.value })} /></Field>
           <Field label="Cuota"><input type="number" style={inputStyle} value={form.cuota} onChange={(e) => setForm({ ...form, cuota: e.target.value })} /></Field>
         </div>
+        <label className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 600 }}>
+          <input type="checkbox" checked={form.eximido} onChange={(e) => setForm({ ...form, eximido: e.target.checked })} />
+          Eximido de cuota (no se le cobra ni genera deuda)
+        </label>
         <button disabled={guardando} onClick={submit} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none", marginTop: 6, opacity: guardando ? 0.6 : 1 }}>
           {guardando ? "Creando..." : "Crear socio"}
         </button>
@@ -488,7 +497,7 @@ function NuevoSocioModal({ socios, cuotaConfig, onClose, notify, onChanged }) {
 /* ---------- ADMIN: Detalle de socio ---------- */
 function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
   const [editing, setEditing] = useState(false);
-  const [form, setForm] = useState({ dni: socio.dni, whatsapp: socio.whatsapp, domicilio: socio.domicilio, tipo: socio.tipo, cuota: socio.cuota });
+  const [form, setForm] = useState({ dni: socio.dni, whatsapp: socio.whatsapp, domicilio: socio.domicilio, tipo: socio.tipo, cuota: socio.cuota, fechaAlta: socio.fechaAlta, eximido: socio.eximido });
   const [showBaja, setShowBaja] = useState(false);
   const [showPago, setShowPago] = useState(false);
 
@@ -503,8 +512,10 @@ function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
     if (form.whatsapp !== socio.whatsapp) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "WhatsApp", anterior: socio.whatsapp, nuevo: form.whatsapp });
     if (form.domicilio !== socio.domicilio) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Domicilio", anterior: socio.domicilio, nuevo: form.domicilio });
     if (Number(form.cuota) !== socio.cuota) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Cuota", anterior: formatMoney(socio.cuota), nuevo: formatMoney(form.cuota) });
+    if (form.fechaAlta !== socio.fechaAlta) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Fecha de alta", anterior: formatFechaISO(socio.fechaAlta), nuevo: formatFechaISO(form.fechaAlta) });
+    if (!!form.eximido !== !!socio.eximido) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Eximido de cuota", anterior: socio.eximido ? "Sí" : "No", nuevo: form.eximido ? "Sí" : "No" });
 
-    const { error } = await supabase.from("socios").update({ dni: form.dni, whatsapp: form.whatsapp, domicilio: form.domicilio, tipo: form.tipo, cuota: Number(form.cuota) }).eq("id", socio.id);
+    const { error } = await supabase.from("socios").update({ dni: form.dni, whatsapp: form.whatsapp, domicilio: form.domicilio, tipo: form.tipo, cuota: Number(form.cuota), fecha_alta: form.fechaAlta, eximido: !!form.eximido }).eq("id", socio.id);
     if (error) { notify("Error: " + error.message); return; }
     if (form.tipo !== socio.tipo) {
       cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Tipo de socio", anterior: socio.tipo, nuevo: form.tipo });
@@ -600,13 +611,26 @@ function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
           <InfoRow label="DNI" value={editing ? <input style={inputStyle} value={form.dni} onChange={(e) => setForm({ ...form, dni: e.target.value })} /> : socio.dni} />
           <InfoRow label="WhatsApp" value={editing ? <input style={inputStyle} value={form.whatsapp} onChange={(e) => setForm({ ...form, whatsapp: e.target.value })} /> : socio.whatsapp} />
           <InfoRow label="Domicilio" value={editing ? <input style={inputStyle} value={form.domicilio} onChange={(e) => setForm({ ...form, domicilio: e.target.value })} /> : socio.domicilio} />
-          <InfoRow label="Fecha de alta" value={formatFechaISO(socio.fechaAlta)} />
+          <InfoRow label="Fecha de alta" value={editing ? <input type="date" style={inputStyle} value={form.fechaAlta} onChange={(e) => setForm({ ...form, fechaAlta: e.target.value })} /> : formatFechaISO(socio.fechaAlta)} />
           <InfoRow label="Tipo de socio" value={editing ? (
             <select style={inputStyle} value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}><option>Individual</option><option>Grupal</option><option>Adherente</option></select>
           ) : <TipoBadge tipo={socio.tipo} />} />
-          <InfoRow label="Cuota" value={editing ? <input type="number" style={inputStyle} value={form.cuota} onChange={(e) => setForm({ ...form, cuota: e.target.value })} /> : formatMoney(socio.cuota)} last />
+          <InfoRow label="Cuota" value={editing ? <input type="number" style={inputStyle} value={form.cuota} onChange={(e) => setForm({ ...form, cuota: e.target.value })} /> : formatMoney(socio.cuota)} last={!editing} />
+          {editing && (
+            <div style={{ paddingTop: 10 }}>
+              <label className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 600 }}>
+                <input type="checkbox" checked={!!form.eximido} onChange={(e) => setForm({ ...form, eximido: e.target.checked })} />
+                Eximido de cuota (no se le cobra ni genera deuda)
+              </label>
+            </div>
+          )}
         </div>
       </div>
+      {socio.eximido && !editing && (
+        <div className="px-4 mt-2">
+          <span style={{ background: COLORS.exentoLight, color: COLORS.exento, fontSize: 11.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999 }}>Eximido de cuota</span>
+        </div>
+      )}
 
       {integrantes.length > 0 && (
         <div className="px-4 mt-3">
@@ -742,6 +766,7 @@ function AdminSocios({ socios, cuotaConfig, notify, onChanged }) {
                   <div className="flex items-center gap-2">
                     <span style={{ fontSize: 14.5, fontWeight: 700, color: COLORS.text }}>{s.nombre} {s.apellido}</span>
                     <TipoBadge tipo={s.tipo} />
+                    {s.eximido && <span style={{ background: COLORS.exentoLight, color: COLORS.exento, fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999 }}>Eximido</span>}
                   </div>
                   <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 3 }}>N° {s.id}{s.grupoNombre ? ` · ${s.grupoNombre}` : ""}</div>
                 </div>
@@ -848,7 +873,7 @@ function AdminPagos({ socios, notify, onChanged }) {
   const [showReporte, setShowReporte] = useState(false);
 
   const activos = socios.filter((s) => s.estado === "Activo");
-  const relevantes = (s) => s.tipo !== "Grupal" || s.esTitular;
+  const relevantes = (s) => (s.tipo !== "Grupal" || s.esTitular) && !s.eximido;
   const cambiarMes = (delta) => { const r = shiftMonth(mes, anio, delta); setMes(r.mes); setAnio(r.anio); };
   const matchQuery = (s) => {
     if (!query) return true;
@@ -1157,11 +1182,11 @@ function UserInicio({ socio, socios, notificaciones, onExit }) {
             <Crest size={34} />
             <div>
               <div style={{ fontFamily: DISPLAY_FONT, fontSize: 15, fontWeight: 700, letterSpacing: 0.5 }}>PUNTA ALTA RUGBY CLUB</div>
-              <div style={{ fontSize: 10.5, color: COLORS.gold, fontWeight: 600 }}>CARNET DE SOCIO</div>
+              <div style={{ fontSize: 10.5, color: COLORS.green, fontWeight: 600 }}>CARNET DE SOCIO</div>
             </div>
           </div>
           <div className="flex items-center gap-4">
-            <div style={{ width: 62, height: 62, borderRadius: 999, overflow: "hidden", background: COLORS.gold, color: COLORS.navyDark, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: DISPLAY_FONT, fontSize: 22, fontWeight: 700, border: "3px solid rgba(255,255,255,0.3)", flexShrink: 0 }}>
+            <div style={{ width: 62, height: 62, borderRadius: 999, overflow: "hidden", background: COLORS.green, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: DISPLAY_FONT, fontSize: 22, fontWeight: 700, border: "3px solid rgba(255,255,255,0.3)", flexShrink: 0 }}>
               {socio.foto ? <img src={socio.foto} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <>{socio.nombre[0]}{socio.apellido[0]}</>}
             </div>
             <div>
@@ -1256,9 +1281,15 @@ function UserPagos({ socio, socios, notify, onChanged }) {
           <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Cuota de {cap(MESES[CURRENT_MONTH - 1])}</div>
           <div style={{ fontFamily: DISPLAY_FONT, fontSize: 32, fontWeight: 700, color: COLORS.text, marginTop: 2 }}>{formatMoney(socio.cuota)}</div>
           <div style={{ marginTop: 8 }}><EstadoPill info={info} /></div>
-          <button onClick={() => setShowMP(true)} className="w-full flex items-center justify-center gap-2" style={{ background: "#009EE3", color: "#fff", fontWeight: 700, padding: "13px 0", borderRadius: 10, marginTop: 16, fontSize: 14.5, border: "none" }}>
-            <Wallet size={18} /> Pagar con Mercado Pago
-          </button>
+          {info.estado === "Eximido" ? (
+            <div style={{ background: COLORS.exentoLight, color: COLORS.exento, borderRadius: 10, padding: "12px 14px", marginTop: 16, fontSize: 13 }}>
+              Estás eximido del pago de la cuota. ¡Gracias por tu colaboración con el club!
+            </div>
+          ) : (
+            <button onClick={() => setShowMP(true)} className="w-full flex items-center justify-center gap-2" style={{ background: "#009EE3", color: "#fff", fontWeight: 700, padding: "13px 0", borderRadius: 10, marginTop: 16, fontSize: 14.5, border: "none" }}>
+              <Wallet size={18} /> Pagar con Mercado Pago
+            </button>
+          )}
         </div>
 
         {info.estado === "Deudor" && (

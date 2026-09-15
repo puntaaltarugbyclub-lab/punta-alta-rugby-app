@@ -98,6 +98,15 @@ function pagosEfectivos(socio, socios) {
   }
   return socio.pagos;
 }
+function listaDeGrupos(socios) {
+  const titulares = socios.filter((s) => s.tipo === "Grupal" && s.esTitular && s.estado === "Activo");
+  return titulares.map((t) => ({
+    grupoId: t.grupoId,
+    grupoNombre: t.grupoNombre,
+    cuota: t.cuota,
+    integrantes: socios.filter((s) => s.grupoId === t.grupoId && s.estado === "Activo").length,
+  }));
+}
 function estadoCuota(socio, socios) {
   if (socio.eximido) return { estado: "Eximido", meses: 0, mesesLista: [], color: COLORS.exento, bg: COLORS.exentoLight };
   const pagos = pagosEfectivos(socio, socios);
@@ -127,6 +136,24 @@ function formatMesesLista(lista) {
   if (nombres.length === 0) return "";
   if (nombres.length === 1) return nombres[0];
   return nombres.slice(0, -1).join(", ") + " y " + nombres[nombres.length - 1];
+}
+// Calcula los próximos N meses a pagar, saltando los que ya están pagados.
+// Si el socio debe meses anteriores, esos se cubren primero; si está al día,
+// sigue de largo hacia meses futuros (pago por adelantado).
+function proximosMesesAPagar(socio, socios, cantidad) {
+  const pagos = pagosEfectivos(socio, socios);
+  const pagadoSet = new Set(pagos.map((p) => `${p.anio}-${p.mes}`));
+  const pagado = (mes, anio) => pagadoSet.has(`${anio}-${mes}`);
+  const alta = new Date(socio.createdAt || socio.fechaAlta);
+  let cursor = { mes: alta.getMonth() + 1, anio: alta.getFullYear() };
+  const resultado = [];
+  let i = 0;
+  while (resultado.length < cantidad && i < 240) {
+    if (!pagado(cursor.mes, cursor.anio)) resultado.push({ mes: cursor.mes, anio: cursor.anio });
+    cursor = shiftMonth(cursor.mes, cursor.anio, 1);
+    i++;
+  }
+  return resultado;
 }
 function iconoEstado(estado) {
   if (estado === "Al día") return CheckCircle2;
@@ -439,18 +466,37 @@ function AdminDashboard({ socios, onOpenNotif, onCompose, onExit }) {
 function NuevoSocioModal({ socios, cuotaConfig, onClose, notify, onChanged }) {
   const nextId = socios.length ? Math.max(...socios.map((s) => s.id)) + 1 : 1;
   const [form, setForm] = useState({ id: nextId, nombre: "", apellido: "", dni: "", whatsapp: "", domicilio: "", tipo: "Individual", grupoNombre: "", fechaAlta: new Date().toISOString().slice(0, 10), cuota: cuotaConfig.Individual, eximido: false });
+  const [modoGrupo, setModoGrupo] = useState("nuevo"); // "nuevo" | "existente"
+  const [grupoElegido, setGrupoElegido] = useState("");
   const [guardando, setGuardando] = useState(false);
+
+  const grupos = listaDeGrupos(socios);
+  const gruposConLugar = grupos.filter((g) => g.integrantes < 4);
 
   const onTipoChange = (tipo) => setForm({ ...form, tipo, cuota: cuotaConfig[tipo] });
 
   const submit = async () => {
     if (!form.nombre || !form.apellido || !form.dni) { notify("Completá al menos nombre, apellido y DNI."); return; }
+    if (form.tipo === "Grupal" && modoGrupo === "nuevo" && !form.grupoNombre) { notify("Ponele un nombre al grupo."); return; }
+    if (form.tipo === "Grupal" && modoGrupo === "existente" && !grupoElegido) { notify("Elegí a qué grupo sumarlo."); return; }
+
+    let grupoId = null, esTitular = false, grupoNombre = null, cuota = Number(form.cuota);
+    if (form.tipo === "Grupal") {
+      if (modoGrupo === "nuevo") {
+        grupoId = `g${form.id}`; esTitular = true; grupoNombre = form.grupoNombre; cuota = Number(form.cuota);
+      } else {
+        const g = grupos.find((x) => x.grupoId === grupoElegido);
+        if (!g) { notify("Ese grupo ya no está disponible."); return; }
+        if (g.integrantes >= 4) { notify("Ese grupo ya tiene 4 integrantes (el máximo permitido)."); return; }
+        grupoId = g.grupoId; esTitular = false; grupoNombre = g.grupoNombre; cuota = g.cuota;
+      }
+    }
+
     setGuardando(true);
     const { error } = await supabase.from("socios").insert({
       id: Number(form.id), nombre: form.nombre, apellido: form.apellido, dni: form.dni,
-      whatsapp: form.whatsapp, domicilio: form.domicilio, tipo: form.tipo, cuota: Number(form.cuota),
-      estado: "Activo", grupo_id: form.tipo === "Grupal" ? `g${form.id}` : null,
-      es_titular: form.tipo === "Grupal", grupo_nombre: form.tipo === "Grupal" ? form.grupoNombre : null,
+      whatsapp: form.whatsapp, domicilio: form.domicilio, tipo: form.tipo, cuota,
+      estado: "Activo", grupo_id: grupoId, es_titular: esTitular, grupo_nombre: grupoNombre,
       fecha_alta: form.fechaAlta, eximido: !!form.eximido,
     });
     if (error) { setGuardando(false); notify("Error: " + error.message); return; }
@@ -477,10 +523,37 @@ function NuevoSocioModal({ socios, cuotaConfig, onClose, notify, onChanged }) {
             <option>Individual</option><option>Grupal</option><option>Adherente</option>
           </select>
         </Field>
-        {form.tipo === "Grupal" && <Field label="Nombre del grupo (ej: Familia Pérez)"><input style={inputStyle} value={form.grupoNombre} onChange={(e) => setForm({ ...form, grupoNombre: e.target.value })} /></Field>}
+
+        {form.tipo === "Grupal" && (
+          <div style={{ background: COLORS.bg, borderRadius: 10, padding: 12 }}>
+            <div className="flex gap-2" style={{ marginBottom: 10 }}>
+              <button onClick={() => setModoGrupo("nuevo")} style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontWeight: 700, fontSize: 12.5, background: modoGrupo === "nuevo" ? COLORS.navy : COLORS.surface, color: modoGrupo === "nuevo" ? "#fff" : COLORS.text, border: `1px solid ${modoGrupo === "nuevo" ? COLORS.navy : COLORS.border}` }}>Nuevo grupo</button>
+              <button onClick={() => setModoGrupo("existente")} style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontWeight: 700, fontSize: 12.5, background: modoGrupo === "existente" ? COLORS.navy : COLORS.surface, color: modoGrupo === "existente" ? "#fff" : COLORS.text, border: `1px solid ${modoGrupo === "existente" ? COLORS.navy : COLORS.border}` }}>Sumar a un grupo</button>
+            </div>
+
+            {modoGrupo === "nuevo" ? (
+              <Field label="Nombre del grupo (ej: Familia Pérez)"><input style={inputStyle} value={form.grupoNombre} onChange={(e) => setForm({ ...form, grupoNombre: e.target.value })} /></Field>
+            ) : gruposConLugar.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Todavía no hay ningún grupo con lugar disponible. Creá uno nuevo primero.</div>
+            ) : (
+              <Field label="Elegir grupo">
+                <select style={inputStyle} value={grupoElegido} onChange={(e) => setGrupoElegido(e.target.value)}>
+                  <option value="">Seleccioná un grupo...</option>
+                  {gruposConLugar.map((g) => (
+                    <option key={g.grupoId} value={g.grupoId}>{g.grupoNombre} ({g.integrantes}/4 integrantes)</option>
+                  ))}
+                </select>
+              </Field>
+            )}
+            {modoGrupo === "existente" && grupoElegido && (
+              <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 6 }}>Este socio no será titular: la cuota del grupo se sigue cobrando a nombre de quien ya es titular.</div>
+            )}
+          </div>
+        )}
+
         <div className="flex gap-3">
           <Field label="Fecha de alta"><input type="date" style={inputStyle} value={form.fechaAlta} onChange={(e) => setForm({ ...form, fechaAlta: e.target.value })} /></Field>
-          <Field label="Cuota"><input type="number" style={inputStyle} value={form.cuota} onChange={(e) => setForm({ ...form, cuota: e.target.value })} /></Field>
+          <Field label="Cuota"><input type="number" style={inputStyle} value={form.cuota} onChange={(e) => setForm({ ...form, cuota: e.target.value })} disabled={form.tipo === "Grupal" && modoGrupo === "existente"} /></Field>
         </div>
         <label className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 600 }}>
           <input type="checkbox" checked={form.eximido} onChange={(e) => setForm({ ...form, eximido: e.target.checked })} />
@@ -498,12 +571,17 @@ function NuevoSocioModal({ socios, cuotaConfig, onClose, notify, onChanged }) {
 function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ dni: socio.dni, whatsapp: socio.whatsapp, domicilio: socio.domicilio, tipo: socio.tipo, cuota: socio.cuota, fechaAlta: socio.fechaAlta, eximido: socio.eximido });
+  const [modoGrupo, setModoGrupo] = useState("nuevo");
+  const [grupoElegido, setGrupoElegido] = useState("");
+  const [grupoNombreNuevo, setGrupoNombreNuevo] = useState("");
   const [showBaja, setShowBaja] = useState(false);
   const [showPago, setShowPago] = useState(false);
 
   const info = estadoCuota(socio, socios);
   const integrantes = socio.grupoId ? socios.filter((s) => s.grupoId === socio.grupoId) : [];
   const titular = integrantes.find((i) => i.esTitular);
+  const pasandoAGrupal = form.tipo === "Grupal" && socio.tipo !== "Grupal";
+  const gruposConLugar = listaDeGrupos(socios).filter((g) => g.integrantes < 4);
 
   const guardar = async () => {
     const cambios = [];
@@ -511,11 +589,26 @@ function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
     if (form.dni !== socio.dni) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "DNI", anterior: socio.dni, nuevo: form.dni });
     if (form.whatsapp !== socio.whatsapp) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "WhatsApp", anterior: socio.whatsapp, nuevo: form.whatsapp });
     if (form.domicilio !== socio.domicilio) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Domicilio", anterior: socio.domicilio, nuevo: form.domicilio });
-    if (Number(form.cuota) !== socio.cuota) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Cuota", anterior: formatMoney(socio.cuota), nuevo: formatMoney(form.cuota) });
-    if (form.fechaAlta !== socio.fechaAlta) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Fecha de alta", anterior: formatFechaISO(socio.fechaAlta), nuevo: formatFechaISO(form.fechaAlta) });
     if (!!form.eximido !== !!socio.eximido) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Eximido de cuota", anterior: socio.eximido ? "Sí" : "No", nuevo: form.eximido ? "Sí" : "No" });
+    if (form.fechaAlta !== socio.fechaAlta) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Fecha de alta", anterior: formatFechaISO(socio.fechaAlta), nuevo: formatFechaISO(form.fechaAlta) });
 
-    const { error } = await supabase.from("socios").update({ dni: form.dni, whatsapp: form.whatsapp, domicilio: form.domicilio, tipo: form.tipo, cuota: Number(form.cuota), fecha_alta: form.fechaAlta, eximido: !!form.eximido }).eq("id", socio.id);
+    const payload = { dni: form.dni, whatsapp: form.whatsapp, domicilio: form.domicilio, tipo: form.tipo, fecha_alta: form.fechaAlta, eximido: !!form.eximido };
+
+    if (pasandoAGrupal) {
+      if (modoGrupo === "nuevo") {
+        if (!grupoNombreNuevo) { notify("Ponele un nombre al grupo."); return; }
+        payload.grupo_id = `g${socio.id}`; payload.es_titular = true; payload.grupo_nombre = grupoNombreNuevo; payload.cuota = Number(form.cuota);
+      } else {
+        const g = gruposConLugar.find((x) => x.grupoId === grupoElegido);
+        if (!g) { notify("Elegí a qué grupo sumarlo."); return; }
+        payload.grupo_id = g.grupoId; payload.es_titular = false; payload.grupo_nombre = g.grupoNombre; payload.cuota = g.cuota;
+      }
+    } else {
+      payload.cuota = Number(form.cuota);
+    }
+    if (Number(payload.cuota) !== socio.cuota) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Cuota", anterior: formatMoney(socio.cuota), nuevo: formatMoney(payload.cuota) });
+
+    const { error } = await supabase.from("socios").update(payload).eq("id", socio.id);
     if (error) { notify("Error: " + error.message); return; }
     if (form.tipo !== socio.tipo) {
       cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Tipo de socio", anterior: socio.tipo, nuevo: form.tipo });
@@ -615,7 +708,29 @@ function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
           <InfoRow label="Tipo de socio" value={editing ? (
             <select style={inputStyle} value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}><option>Individual</option><option>Grupal</option><option>Adherente</option></select>
           ) : <TipoBadge tipo={socio.tipo} />} />
-          <InfoRow label="Cuota" value={editing ? <input type="number" style={inputStyle} value={form.cuota} onChange={(e) => setForm({ ...form, cuota: e.target.value })} /> : formatMoney(socio.cuota)} last={!editing} />
+          {editing && pasandoAGrupal && (
+            <div style={{ background: COLORS.bg, borderRadius: 10, padding: 12, margin: "8px 0" }}>
+              <div className="flex gap-2" style={{ marginBottom: 10 }}>
+                <button onClick={() => setModoGrupo("nuevo")} style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontWeight: 700, fontSize: 12.5, background: modoGrupo === "nuevo" ? COLORS.navy : COLORS.surface, color: modoGrupo === "nuevo" ? "#fff" : COLORS.text, border: `1px solid ${modoGrupo === "nuevo" ? COLORS.navy : COLORS.border}` }}>Nuevo grupo</button>
+                <button onClick={() => setModoGrupo("existente")} style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontWeight: 700, fontSize: 12.5, background: modoGrupo === "existente" ? COLORS.navy : COLORS.surface, color: modoGrupo === "existente" ? "#fff" : COLORS.text, border: `1px solid ${modoGrupo === "existente" ? COLORS.navy : COLORS.border}` }}>Sumar a un grupo</button>
+              </div>
+              {modoGrupo === "nuevo" ? (
+                <Field label="Nombre del grupo (ej: Familia Pérez)"><input style={inputStyle} value={grupoNombreNuevo} onChange={(e) => setGrupoNombreNuevo(e.target.value)} /></Field>
+              ) : gruposConLugar.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Todavía no hay ningún grupo con lugar disponible.</div>
+              ) : (
+                <Field label="Elegir grupo">
+                  <select style={inputStyle} value={grupoElegido} onChange={(e) => setGrupoElegido(e.target.value)}>
+                    <option value="">Seleccioná un grupo...</option>
+                    {gruposConLugar.map((g) => (
+                      <option key={g.grupoId} value={g.grupoId}>{g.grupoNombre} ({g.integrantes}/4 integrantes)</option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+            </div>
+          )}
+          <InfoRow label="Cuota" value={editing ? <input type="number" style={inputStyle} value={form.cuota} onChange={(e) => setForm({ ...form, cuota: e.target.value })} disabled={pasandoAGrupal} /> : formatMoney(socio.cuota)} last={!editing} />
           {editing && (
             <div style={{ paddingTop: 10 }}>
               <label className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 600 }}>

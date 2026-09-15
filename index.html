@@ -98,6 +98,17 @@ function pagosEfectivos(socio, socios) {
   }
   return socio.pagos;
 }
+function mesesDisponiblesParaPago(socio, socios, info, mesExtra) {
+  const pagos = pagosEfectivos(socio, socios);
+  const yaPagado = (m) => pagos.some((p) => p.mes === m.mes && p.anio === m.anio);
+  const lista = [...info.mesesLista];
+  const candidatos = [{ mes: CURRENT_MONTH, anio: CURRENT_YEAR }];
+  if (mesExtra) candidatos.push(mesExtra);
+  candidatos.forEach((c) => {
+    if (!yaPagado(c) && !lista.some((m) => m.mes === c.mes && m.anio === c.anio)) lista.push(c);
+  });
+  return lista.sort((a, b) => (a.anio * 12 + a.mes) - (b.anio * 12 + b.mes));
+}
 function listaDeGrupos(socios) {
   const titulares = socios.filter((s) => s.tipo === "Grupal" && s.esTitular && s.estado === "Activo");
   return titulares.map((t) => ({
@@ -256,24 +267,51 @@ function Section({ title, icon: Icon, children }) {
     </div>
   );
 }
-function RegistrarPagoModal({ cuotaSugerida, onClose, onConfirm }) {
-  const [monto, setMonto] = useState(cuotaSugerida);
+function RegistrarPagoModal({ mesesDisponibles, cuotaSugerida, onClose, onConfirm }) {
+  const [seleccionados, setSeleccionados] = useState(mesesDisponibles.length ? [`${mesesDisponibles[0].anio}-${mesesDisponibles[0].mes}`] : []);
+  const [montoPorMes, setMontoPorMes] = useState(cuotaSugerida);
   const [medio, setMedio] = useState("Efectivo");
   const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
   const [guardando, setGuardando] = useState(false);
-  const confirmar = async () => { setGuardando(true); await onConfirm(monto, medio, fecha); setGuardando(false); };
+
+  const toggle = (key) => setSeleccionados(seleccionados.includes(key) ? seleccionados.filter((k) => k !== key) : [...seleccionados, key]);
+
+  const confirmar = async () => {
+    if (seleccionados.length === 0) return;
+    setGuardando(true);
+    const meses = seleccionados.map((k) => { const [anio, mes] = k.split("-").map(Number); return { mes, anio }; });
+    await onConfirm(meses, montoPorMes, medio, fecha);
+    setGuardando(false);
+  };
+
   return (
     <Modal title="Registrar pago" onClose={onClose}>
       <div className="flex flex-col gap-3">
-        <Field label="Monto"><input type="number" style={inputStyle} value={monto} onChange={(e) => setMonto(e.target.value)} /></Field>
+        {mesesDisponibles.length > 0 && (
+          <Field label="¿Qué mes o meses cubre este pago?">
+            <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 8 }}>
+              {mesesDisponibles.map((m) => {
+                const key = `${m.anio}-${m.mes}`;
+                return (
+                  <label key={key} className="flex items-center gap-2" style={{ fontSize: 13.5, padding: "5px 2px" }}>
+                    <input type="checkbox" checked={seleccionados.includes(key)} onChange={() => toggle(key)} />
+                    {cap(MESES[m.mes - 1])} {m.anio}
+                  </label>
+                );
+              })}
+            </div>
+          </Field>
+        )}
+        <Field label={seleccionados.length > 1 ? "Monto por cada mes" : "Monto"}><input type="number" style={inputStyle} value={montoPorMes} onChange={(e) => setMontoPorMes(e.target.value)} /></Field>
+        {seleccionados.length > 1 && <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginTop: -6 }}>Total: {formatMoney(Number(montoPorMes || 0) * seleccionados.length)} ({seleccionados.length} meses)</div>}
         <Field label="Medio de pago">
           <select style={inputStyle} value={medio} onChange={(e) => setMedio(e.target.value)}>
             <option>Efectivo</option><option>Transferencia</option><option>Mercado Pago</option>
           </select>
         </Field>
         <Field label="Fecha"><input type="date" style={inputStyle} value={fecha} onChange={(e) => setFecha(e.target.value)} /></Field>
-        <button disabled={guardando} onClick={confirmar} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none", marginTop: 6, opacity: guardando ? 0.6 : 1 }}>
-          {guardando ? "Guardando..." : "Confirmar pago"}
+        <button disabled={guardando || seleccionados.length === 0} onClick={confirmar} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none", marginTop: 6, opacity: (guardando || seleccionados.length === 0) ? 0.6 : 1 }}>
+          {guardando ? "Guardando..." : seleccionados.length > 1 ? `Confirmar ${seleccionados.length} pagos` : "Confirmar pago"}
         </button>
       </div>
     </Modal>
@@ -637,13 +675,12 @@ function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
     onBack();
   };
 
-  const registrarPago = async (monto, medio, fecha) => {
-    const d = new Date(fecha);
-    const mes = d.getMonth() + 1, anio = d.getFullYear();
+  const registrarPago = async (meses, montoPorMes, medio, fecha) => {
     const targetId = socio.grupoId ? socios.find((s) => s.grupoId === socio.grupoId && s.esTitular)?.id : socio.id;
-    const { error } = await supabase.from("pagos").insert({ socio_id: targetId, mes, anio, monto: Number(monto), medio, fecha });
-    if (error) { notify(error.code === "23505" ? "Ese mes ya tiene un pago registrado." : "Error: " + error.message); return; }
-    notify("Pago registrado correctamente.");
+    const filas = meses.map((m) => ({ socio_id: targetId, mes: m.mes, anio: m.anio, monto: Number(montoPorMes), medio, fecha }));
+    const { error } = await supabase.from("pagos").insert(filas);
+    if (error) { notify(error.code === "23505" ? "Alguno de esos meses ya tiene un pago registrado." : "Error: " + error.message); return; }
+    notify(meses.length > 1 ? `${meses.length} pagos registrados correctamente.` : "Pago registrado correctamente.");
     setShowPago(false);
     await onChanged();
   };
@@ -826,7 +863,7 @@ function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
           </div>
         </Modal>
       )}
-      {showPago && <RegistrarPagoModal cuotaSugerida={socio.cuota} onClose={() => setShowPago(false)} onConfirm={registrarPago} />}
+      {showPago && <RegistrarPagoModal mesesDisponibles={mesesDisponiblesParaPago(socio, socios, info)} cuotaSugerida={socio.cuota} onClose={() => setShowPago(false)} onConfirm={registrarPago} />}
     </div>
   );
 }
@@ -1009,11 +1046,12 @@ function AdminPagos({ socios, notify, onChanged }) {
   const pendienteMonto = pendientes.reduce((acc, s) => acc + s.cuota, 0);
   const deudores = activos.filter(relevantes).filter(matchQuery).map((s) => ({ s, info: estadoCuota(s, socios) })).filter((x) => x.info.estado === "Deudor");
 
-  const registrarPago = async (socio, monto, medio, fecha) => {
+  const registrarPago = async (socio, mesesElegidos, montoPorMes, medio, fecha) => {
     const targetId = socio.grupoId ? socios.find((x) => x.grupoId === socio.grupoId && x.esTitular)?.id : socio.id;
-    const { error } = await supabase.from("pagos").insert({ socio_id: targetId, mes, anio, monto: Number(monto), medio, fecha });
-    if (error) { notify(error.code === "23505" ? "Ese mes ya tiene un pago registrado." : "Error: " + error.message); return; }
-    notify("Pago registrado.");
+    const filas = mesesElegidos.map((m) => ({ socio_id: targetId, mes: m.mes, anio: m.anio, monto: Number(montoPorMes), medio, fecha }));
+    const { error } = await supabase.from("pagos").insert(filas);
+    if (error) { notify(error.code === "23505" ? "Alguno de esos meses ya tiene un pago registrado." : "Error: " + error.message); return; }
+    notify(mesesElegidos.length > 1 ? `${mesesElegidos.length} pagos registrados.` : "Pago registrado.");
     setPagoTarget(null);
     await onChanged();
   };
@@ -1088,7 +1126,7 @@ function AdminPagos({ socios, notify, onChanged }) {
         </div>
       </div>
 
-      {pagoTarget && <RegistrarPagoModal cuotaSugerida={pagoTarget.cuota} onClose={() => setPagoTarget(null)} onConfirm={(monto, medio, fecha) => registrarPago(pagoTarget, monto, medio, fecha)} />}
+      {pagoTarget && <RegistrarPagoModal mesesDisponibles={mesesDisponiblesParaPago(pagoTarget, socios, estadoCuota(pagoTarget, socios), { mes, anio })} cuotaSugerida={pagoTarget.cuota} onClose={() => setPagoTarget(null)} onConfirm={(mesesElegidos, montoPorMes, medio, fecha) => registrarPago(pagoTarget, mesesElegidos, montoPorMes, medio, fecha)} />}
       {showReporte && <ReporteModal socios={socios} onClose={() => setShowReporte(false)} notify={notify} />}
     </div>
   );

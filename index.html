@@ -1038,7 +1038,7 @@ function AdminPagos({ socios, notify, onChanged }) {
   activos.filter(relevantes).filter(matchQuery).forEach((s) => {
     const pagos = pagosEfectivos(s, socios);
     const pago = pagos.find((p) => p.mes === mes && p.anio === anio);
-    const yaEraSocio = new Date(s.fechaAlta) <= new Date(anio, mes - 1, 28);
+    const yaEraSocio = new Date(s.createdAt || s.fechaAlta) <= new Date(anio, mes - 1, 28);
     if (!yaEraSocio) return;
     if (pago) pagados.push({ socio: s, pago }); else pendientes.push(s);
   });
@@ -1104,6 +1104,7 @@ function AdminPagos({ socios, notify, onChanged }) {
               <div>
                 <div style={{ fontSize: 13.5, fontWeight: 600 }}>{s.tipo === "Grupal" ? s.grupoNombre : `${s.nombre} ${s.apellido}`}</div>
                 <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>N° {s.id} · {formatMoney(s.cuota)}</div>
+                <div style={{ fontSize: 10, color: "red" }}>DEBUG createdAt: {String(s.createdAt)}</div>
               </div>
               <button onClick={() => setPagoTarget(s)} style={{ fontSize: 12, fontWeight: 700, color: COLORS.navy, border: `1px solid ${COLORS.navy}`, borderRadius: 8, padding: "6px 10px", background: "none" }}>Registrar</button>
             </div>

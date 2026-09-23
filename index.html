@@ -1411,19 +1411,30 @@ function UserHistorial({ socio, socios }) {
 
 function UserPagos({ socio, socios, notify, onChanged }) {
   const info = estadoCuota(socio, socios);
-  const [showMP, setShowMP] = useState(false);
-  const [pagando, setPagando] = useState(false);
+  const [cantidad, setCantidad] = useState(Math.max(1, info.meses || 1));
+  const [redirigiendo, setRedirigiendo] = useState(false);
 
-  const pagarMesActual = async () => {
-    setPagando(true);
-    const fecha = new Date().toISOString().slice(0, 10);
-    const targetId = socio.grupoId ? socios.find((s) => s.grupoId === socio.grupoId && s.esTitular)?.id : socio.id;
-    const { error } = await supabase.from("pagos").insert({ socio_id: targetId, mes: CURRENT_MONTH, anio: CURRENT_YEAR, monto: socio.cuota, medio: "Mercado Pago", fecha });
-    setPagando(false);
-    setShowMP(false);
-    if (error) { notify(error.code === "23505" ? "Ya hay un pago registrado este mes." : "Error: " + error.message); return; }
-    notify("¡Pago acreditado! Gracias.");
-    await onChanged();
+  const meses = proximosMesesAPagar(socio, socios, cantidad);
+  const total = meses.length * socio.cuota;
+
+  const pagarConMP = async () => {
+    if (meses.length === 0) return;
+    setRedirigiendo(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const returnUrl = window.location.origin + window.location.pathname;
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/crear-preferencia-pago`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${sessionData.session.access_token}`, "apikey": SUPABASE_ANON_KEY },
+        body: JSON.stringify({ meses, returnUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error || !data.checkoutUrl) { setRedirigiendo(false); notify("Error: " + (data.error || "no se pudo iniciar el pago")); return; }
+      window.location.href = data.checkoutUrl;
+    } catch (e) {
+      setRedirigiendo(false);
+      notify("Error al conectar con Mercado Pago.");
+    }
   };
 
   return (
@@ -1434,41 +1445,37 @@ function UserPagos({ socio, socios, notify, onChanged }) {
           <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Cuota de {cap(MESES[CURRENT_MONTH - 1])}</div>
           <div style={{ fontFamily: DISPLAY_FONT, fontSize: 32, fontWeight: 700, color: COLORS.text, marginTop: 2 }}>{formatMoney(socio.cuota)}</div>
           <div style={{ marginTop: 8 }}><EstadoPill info={info} /></div>
+
           {info.estado === "Eximido" ? (
             <div style={{ background: COLORS.exentoLight, color: COLORS.exento, borderRadius: 10, padding: "12px 14px", marginTop: 16, fontSize: 13 }}>
               Estás eximido del pago de la cuota. ¡Gracias por tu colaboración con el club!
             </div>
           ) : (
-            <button onClick={() => setShowMP(true)} className="w-full flex items-center justify-center gap-2" style={{ background: "#009EE3", color: "#fff", fontWeight: 700, padding: "13px 0", borderRadius: 10, marginTop: 16, fontSize: 14.5, border: "none" }}>
-              <Wallet size={18} /> Pagar con Mercado Pago
-            </button>
+            <>
+              {info.estado === "Deudor" && (
+                <div style={{ fontSize: 12.5, color: COLORS.red, marginTop: 12 }}>
+                  Debés {info.meses} {info.meses === 1 ? "mes" : "meses"} ({formatMesesLista(info.mesesLista)}).
+                </div>
+              )}
+
+              <div className="flex items-center justify-between" style={{ marginTop: 16, background: COLORS.bg, borderRadius: 10, padding: "10px 14px" }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>Cuotas a pagar</span>
+                <div className="flex items-center gap-3">
+                  <button onClick={() => setCantidad(Math.max(1, cantidad - 1))} style={{ width: 30, height: 30, borderRadius: 999, border: `1px solid ${COLORS.border}`, background: COLORS.surface, fontSize: 18, fontWeight: 700, color: COLORS.navy }}>−</button>
+                  <span style={{ fontFamily: DISPLAY_FONT, fontSize: 18, fontWeight: 700, minWidth: 20, textAlign: "center" }}>{cantidad}</span>
+                  <button onClick={() => setCantidad(Math.min(24, cantidad + 1))} style={{ width: 30, height: 30, borderRadius: 999, border: `1px solid ${COLORS.border}`, background: COLORS.surface, fontSize: 18, fontWeight: 700, color: COLORS.navy }}>+</button>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 6 }}>{formatMesesLista(meses)}</div>
+              <div style={{ fontFamily: DISPLAY_FONT, fontSize: 20, fontWeight: 700, color: COLORS.navy, marginTop: 4 }}>Total: {formatMoney(total)}</div>
+
+              <button disabled={redirigiendo} onClick={pagarConMP} className="w-full flex items-center justify-center gap-2" style={{ background: "#009EE3", color: "#fff", fontWeight: 700, padding: "13px 0", borderRadius: 10, marginTop: 14, fontSize: 14.5, border: "none", opacity: redirigiendo ? 0.7 : 1 }}>
+                <Wallet size={18} /> {redirigiendo ? "Redirigiendo..." : "Pagar con Mercado Pago"}
+              </button>
+            </>
           )}
         </div>
-
-        {info.estado === "Deudor" && (
-          <div style={{ background: COLORS.surface, borderRadius: 14, padding: 18, marginTop: 14 }}>
-            <div style={{ fontFamily: DISPLAY_FONT, fontSize: 17, fontWeight: 700, color: COLORS.red, marginBottom: 6 }}>Meses adeudados</div>
-            <div style={{ fontSize: 13.5, color: COLORS.text }}>{info.meses} {info.meses === 1 ? "mes" : "meses"} sin abonar</div>
-            <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginTop: 2 }}>{formatMesesLista(info.mesesLista)}</div>
-            <div style={{ fontFamily: DISPLAY_FONT, fontSize: 22, fontWeight: 700, color: COLORS.red, marginTop: 4 }}>{formatMoney(info.meses * socio.cuota)}</div>
-          </div>
-        )}
       </div>
-
-      {showMP && (
-        <Modal title="Mercado Pago" onClose={() => !pagando && setShowMP(false)}>
-          <div style={{ textAlign: "center", padding: "10px 0" }}>
-            <Wallet size={40} color="#009EE3" style={{ margin: "0 auto 12px" }} />
-            {!pagando ? (
-              <>
-                <p style={{ fontSize: 13.5, color: COLORS.text, marginBottom: 16 }}>Vas a pagar {formatMoney(socio.cuota)} correspondiente a este mes.</p>
-                <button onClick={pagarMesActual} className="w-full" style={{ background: "#009EE3", color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none" }}>Confirmar pago</button>
-                <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 10 }}>Por ahora el pago se simula (todavía no está conectado el checkout real de Mercado Pago).</div>
-              </>
-            ) : <p style={{ fontSize: 13.5, color: COLORS.textMuted }}>Procesando pago…</p>}
-          </div>
-        </Modal>
-      )}
     </div>
   );
 }
@@ -1561,6 +1568,17 @@ function App() {
     const t = setTimeout(() => setToast(""), 2600);
     return () => clearTimeout(t);
   }, [toast]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("collection_status") || params.get("status");
+    if (status) {
+      if (status === "approved") notify("¡Pago aprobado! Puede tardar unos segundos en reflejarse acá.");
+      else if (status === "pending" || status === "in_process") notify("Tu pago quedó pendiente de confirmación.");
+      else if (status === "rejected") notify("El pago no se pudo procesar.");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setCargandoSesion(false); });

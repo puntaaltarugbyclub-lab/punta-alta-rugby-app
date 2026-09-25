@@ -1313,6 +1313,7 @@ function AdminShell({ data, notify, onChanged, onExit }) {
 ========================================================= */
 function UserInicio({ socio, socios, notificaciones, onExit }) {
   const [showNotif, setShowNotif] = useState(false);
+  const [showFullscreen, setShowFullscreen] = useState(false);
   const info = estadoCuota(socio, socios);
   const misNotifs = notificaciones.filter((n) => n.destinatarios === "todos" || (Array.isArray(n.destinatarios) && n.destinatarios.includes(socio.id)));
 
@@ -1329,7 +1330,11 @@ function UserInicio({ socio, socios, notificaciones, onExit }) {
         }
       />
       <div className="p-4">
-        <div style={{ background: `linear-gradient(135deg, ${COLORS.navy}, ${COLORS.navyDark})`, borderRadius: 18, padding: 20, color: "#fff", position: "relative", overflow: "hidden" }}>
+        <button
+          onClick={() => setShowFullscreen(true)}
+          className="w-full"
+          style={{ background: `linear-gradient(135deg, ${COLORS.navy}, ${COLORS.navyDark})`, borderRadius: 18, padding: 20, color: "#fff", position: "relative", overflow: "hidden", border: "none", textAlign: "left", display: "block" }}
+        >
           <div style={{ position: "absolute", top: -10, right: -10, opacity: 0.15 }}><Crest size={110} /></div>
           <div className="flex items-center gap-3 mb-4">
             <Crest size={34} />
@@ -1348,7 +1353,8 @@ function UserInicio({ socio, socios, notificaciones, onExit }) {
             </div>
           </div>
           <div style={{ marginTop: 16 }}><EstadoPill info={info} /></div>
-        </div>
+          <div style={{ fontSize: 10.5, opacity: 0.6, marginTop: 14, textAlign: "center" }}>Tocá para agrandar</div>
+        </button>
 
         <div style={{ background: COLORS.surface, borderRadius: 12, padding: 16, marginTop: 14 }}>
           <InfoRow label="Cuota mensual" value={formatMoney(socio.cuota)} />
@@ -1358,6 +1364,40 @@ function UserInicio({ socio, socios, notificaciones, onExit }) {
         {info.estado === "Deudor" && <div style={{ background: COLORS.redLight, borderRadius: 12, padding: 14, marginTop: 12, fontSize: 13, color: COLORS.red }}>Debés {info.meses} {info.meses === 1 ? "mes" : "meses"} ({formatMesesLista(info.mesesLista)}). Podés regularizar tu situación desde Pagos.</div>}
         {info.estado === "Pendiente" && <div style={{ background: COLORS.amberLight, borderRadius: 12, padding: 14, marginTop: 12, fontSize: 13, color: COLORS.amber }}>Todavía no registramos el pago de este mes. Recordá abonarlo antes de fin de mes.</div>}
       </div>
+
+      {showFullscreen && (
+        <div
+          onClick={() => setShowFullscreen(false)}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.9)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center" }}
+        >
+          <div
+            style={{
+              width: "88vw", height: "88vh", transform: "rotate(-90deg)",
+              background: `linear-gradient(135deg, ${COLORS.navy}, ${COLORS.navyDark})`,
+              borderRadius: 24, color: "#fff", position: "relative", overflow: "hidden",
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "space-evenly",
+              padding: "6% 4%", boxShadow: "0 20px 60px rgba(0,0,0,0.6)",
+            }}
+          >
+            <div style={{ position: "absolute", top: -30, right: -30, opacity: 0.15 }}><Crest size={180} /></div>
+            <div className="flex flex-col items-center gap-2">
+              <Crest size={52} />
+              <div style={{ fontFamily: DISPLAY_FONT, fontSize: 18, fontWeight: 700, letterSpacing: 0.5, textAlign: "center" }}>PUNTA ALTA RUGBY CLUB</div>
+              <div style={{ fontSize: 12.5, color: COLORS.green, fontWeight: 700 }}>CARNET DE SOCIO</div>
+            </div>
+
+            <div className="flex flex-col items-center gap-3">
+              <div style={{ width: 120, height: 120, borderRadius: 999, overflow: "hidden", background: COLORS.green, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: DISPLAY_FONT, fontSize: 40, fontWeight: 700, border: "4px solid rgba(255,255,255,0.3)", flexShrink: 0 }}>
+                {socio.foto ? <img src={socio.foto} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <>{socio.nombre[0]}{socio.apellido[0]}</>}
+              </div>
+              <div style={{ fontFamily: DISPLAY_FONT, fontSize: 30, fontWeight: 700, textAlign: "center" }}>{socio.nombre} {socio.apellido}</div>
+              <div style={{ fontSize: 16, opacity: 0.85 }}>Socio N° {socio.id} · {socio.tipo}</div>
+            </div>
+
+            <div style={{ transform: "scale(1.4)" }}><EstadoPill info={info} /></div>
+          </div>
+        </div>
+      )}
 
       {showNotif && (
         <Modal title="Notificaciones" onClose={() => setShowNotif(false)}>
@@ -1611,53 +1651,4 @@ function App() {
     const sociosMapeados = (sociosRes.data || []).map(mapSocioRow);
     const porId = Object.fromEntries(sociosMapeados.map((s) => [s.id, s]));
     (tipoRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].historialTipo.push({ tipo: r.tipo, desde: r.desde }); });
-    (cambiosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].historialCambios.push({ fecha: r.fecha, campo: r.campo, anterior: r.anterior, nuevo: r.nuevo }); });
-    (pagosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].pagos.push({ mes: r.mes, anio: r.anio, monto: Number(r.monto), medio: r.medio, fecha: r.fecha }); });
-    Object.values(porId).forEach((s) => { s.historialTipo.sort((a, b) => (a.desde < b.desde ? -1 : 1)); s.historialCambios.sort((a, b) => (a.fecha < b.fecha ? -1 : 1)); });
-
-    setSocios(sociosMapeados);
-
-    const cc = { Adherente: 0, Individual: 0, Grupal: 0 };
-    (cuotaRes.data || []).forEach((r) => { cc[r.tipo] = Number(r.valor); });
-    setCuotaConfig(cc);
-
-    setAdminUsers((adminsRes.data || []).map((a) => ({ id: a.user_id, nombre: a.nombre || "Administrador" })));
-
-    setSolicitudes((solicRes.data || []).map((s) => {
-      const soc = sociosMapeados.find((x) => x.id === s.socio_id);
-      return { id: s.id, nombreSocio: soc ? `${soc.nombre} ${soc.apellido}` : `Socio N° ${s.socio_id}`, nuevoDomicilio: s.nuevo_domicilio };
-    }));
-
-    setNotificaciones((notifRes.data || []).map((n) => ({ id: n.id, destinatarios: n.destinatarios, mensaje: n.mensaje, fecha: n.fecha })));
-    setDatosListos(true);
-  };
-
-  const salir = async () => { await supabase.auth.signOut(); setPerfil(null); setDatosListos(false); };
-
-  if (cargandoSesion) return <PantallaCarga />;
-  if (!session) return (<div style={{ fontFamily: BODY_FONT }}><ToastBar text={toast} /><LoginScreen notify={notify} /></div>);
-  if (!perfil) return (<div style={{ fontFamily: BODY_FONT }}><ToastBar text={toast} /><VincularScreen onVinculado={() => cargarPerfil(session)} onSalir={salir} notify={notify} /></div>);
-  if (!datosListos) return <PantallaCarga />;
-
-  const data = { socios, cuotaConfig, adminUsers, solicitudes, notificaciones };
-
-  return (
-    <div style={{ fontFamily: BODY_FONT }}>
-      <ToastBar text={toast} />
-      {perfil.rol === "admin" ? (
-        <AdminShell data={data} notify={notify} onChanged={recargarDatos} onExit={salir} />
-      ) : perfil.rol === "socio" ? (
-        <UserShell socio={socios.find((s) => s.id === perfil.socio_id)} data={data} notify={notify} onChanged={recargarDatos} onExit={salir} />
-      ) : (
-        <SinAcceso onExit={salir} />
-      )}
-    </div>
-  );
-}
-
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(<App />);
-
-</script>
-</body>
-</html>
+    (cambiosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].historialCambios.pus

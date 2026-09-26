@@ -1,0 +1,1721 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>Punta Alta Rugby Club</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="icon" href="icon-192.png" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="theme-color" content="#123A63" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18",
+    "react-dom/client": "https://esm.sh/react-dom@18/client?external=react",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2",
+    "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react"
+  }
+}
+</script>
+<style>
+  html, body { margin: 0; padding: 0; background: #F5F3EE; }
+  * { box-sizing: border-box; }
+  button { cursor: pointer; font-family: inherit; }
+  input, select, textarea { font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
+<script type="text/babel" data-type="module" data-presets="react">
+import React, { useState, useEffect } from "react";
+import ReactDOM from "react-dom/client";
+import { createClient } from "@supabase/supabase-js";
+import {
+  Home, Users, CreditCard, Settings, Search, Plus, X, Check,
+  ChevronRight, ChevronLeft, ArrowLeft, AlertTriangle, Bell,
+  Send, LogOut, Edit2, Clock, FileText, ShieldCheck,
+  UserPlus, CheckCircle2, KeyRound, DollarSign, Camera, Wallet, MapPin,
+} from "lucide-react";
+
+/* =========================================================
+   PUNTA ALTA RUGBY CLUB — App real (conectada a Supabase)
+   Esta primera versión cubre el panel de administrador.
+   El ingreso de socios se agrega en el próximo paso.
+========================================================= */
+
+const SUPABASE_URL = "https://rfnsufsxxxcjxirxkixk.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_EadGW-IsXZpl3yTwnkirQQ_tZXHrZ60";
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+/* ---------- Tokens de diseño (igual que el prototipo) ---------- */
+const COLORS = {
+  navy: "#123A63", navyDark: "#0C2A49", green: "#2F6B47", greenLight: "#E4F0E7",
+  gold: "#E8B429", amber: "#B8730E", amberLight: "#F6E8D4", red: "#B23A2E",
+  redLight: "#F6E1DE", bg: "#F5F3EE", surface: "#FFFFFF", text: "#22262B",
+  textMuted: "#767D87", border: "#E7E2D6", exento: "#2E6E8E", exentoLight: "#DCEAF0",
+};
+const DISPLAY_FONT = "'Barlow Condensed', sans-serif";
+const BODY_FONT = "'Inter', sans-serif";
+const MESES = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+const pad = (n) => String(n).padStart(2, "0");
+const formatMoney = (n) => "$" + Number(n || 0).toLocaleString("es-AR");
+const formatFechaISO = (iso) => { if (!iso) return "-"; const [y, m, d] = iso.slice(0, 10).split("-"); return `${d}/${m}/${y}`; };
+const inputStyle = { border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "9px 10px", fontSize: 14, width: "100%", fontFamily: BODY_FONT };
+
+const now = new Date();
+const CURRENT_MONTH = now.getMonth() + 1;
+const CURRENT_YEAR = now.getFullYear();
+const CURRENT_DAY = now.getDate();
+
+function shiftMonth(mes, anio, offset) {
+  let m = mes + offset, y = anio;
+  while (m < 1) { m += 12; y -= 1; }
+  while (m > 12) { m -= 12; y += 1; }
+  return { mes: m, anio: y };
+}
+
+/* ---------- Adaptador: fila de Supabase -> objeto que usa la UI ---------- */
+function mapSocioRow(row) {
+  return {
+    id: row.id, nombre: row.nombre, apellido: row.apellido, dni: row.dni,
+    whatsapp: row.whatsapp, domicilio: row.domicilio, tipo: row.tipo,
+    grupoId: row.grupo_id, esTitular: row.es_titular, grupoNombre: row.grupo_nombre,
+    fechaAlta: row.fecha_alta, cuota: Number(row.cuota), estado: row.estado,
+    foto: row.foto_url, eximido: !!row.eximido, createdAt: row.created_at,
+    historialTipo: [], historialCambios: [], pagos: [],
+  };
+}
+
+/* ---------- Lógica de negocio (igual que el prototipo) ---------- */
+function pagosEfectivos(socio, socios) {
+  if (socio.tipo === "Grupal" && !socio.esTitular) {
+    const titular = socios.find((s) => s.grupoId === socio.grupoId && s.esTitular);
+    return titular ? titular.pagos : socio.pagos;
+  }
+  return socio.pagos;
+}
+function mesesDisponiblesParaPago(socio, socios, info, mesExtra) {
+  const pagos = pagosEfectivos(socio, socios);
+  const yaPagado = (m) => pagos.some((p) => p.mes === m.mes && p.anio === m.anio);
+  const lista = [...info.mesesLista];
+  const candidatos = [{ mes: CURRENT_MONTH, anio: CURRENT_YEAR }];
+  if (mesExtra) candidatos.push(mesExtra);
+  candidatos.forEach((c) => {
+    if (!yaPagado(c) && !lista.some((m) => m.mes === c.mes && m.anio === c.anio)) lista.push(c);
+  });
+  return lista.sort((a, b) => (a.anio * 12 + a.mes) - (b.anio * 12 + b.mes));
+}
+function listaDeGrupos(socios) {
+  const titulares = socios.filter((s) => s.tipo === "Grupal" && s.esTitular && s.estado === "Activo");
+  return titulares.map((t) => ({
+    grupoId: t.grupoId,
+    grupoNombre: t.grupoNombre,
+    cuota: t.cuota,
+    integrantes: socios.filter((s) => s.grupoId === t.grupoId && s.estado === "Activo").length,
+  }));
+}
+function estadoCuota(socio, socios) {
+  if (socio.eximido) return { estado: "Eximido", meses: 0, mesesLista: [], color: COLORS.exento, bg: COLORS.exentoLight };
+  const pagos = pagosEfectivos(socio, socios);
+  const set = new Set(pagos.map((p) => `${p.anio}-${p.mes}`));
+  const pagado = (mes, anio) => set.has(`${anio}-${mes}`);
+  // Se usa la fecha real de carga en el sistema (no la fecha de alta, que es editable
+  // y puede ser histórica) para no generar deuda retroactiva por meses previos a la carga.
+  const alta = new Date(socio.createdAt || socio.fechaAlta);
+  const altaYM = alta.getFullYear() * 12 + alta.getMonth();
+  let meses = 0;
+  const mesesLista = [];
+  let cur = shiftMonth(CURRENT_MONTH, CURRENT_YEAR, -1);
+  for (let i = 0; i < 12; i++) {
+    const curYM = cur.anio * 12 + (cur.mes - 1);
+    if (curYM < altaYM) break;
+    if (!pagado(cur.mes, cur.anio)) { meses++; mesesLista.push({ mes: cur.mes, anio: cur.anio }); }
+    cur = shiftMonth(cur.mes, cur.anio, -1);
+  }
+  mesesLista.reverse();
+  if (meses > 0) return { estado: "Deudor", meses, mesesLista, color: COLORS.red, bg: COLORS.redLight };
+  if (pagado(CURRENT_MONTH, CURRENT_YEAR)) return { estado: "Al día", meses: 0, mesesLista: [], color: COLORS.green, bg: COLORS.greenLight };
+  if (CURRENT_DAY <= 10) return { estado: "Al día", meses: 0, mesesLista: [], color: COLORS.green, bg: COLORS.greenLight };
+  return { estado: "Pendiente", meses: 0, mesesLista: [], color: COLORS.amber, bg: COLORS.amberLight };
+}
+function formatMesesLista(lista) {
+  const nombres = lista.map((m) => cap(MESES[m.mes - 1]) + (m.anio !== CURRENT_YEAR ? ` ${m.anio}` : ""));
+  if (nombres.length === 0) return "";
+  if (nombres.length === 1) return nombres[0];
+  return nombres.slice(0, -1).join(", ") + " y " + nombres[nombres.length - 1];
+}
+// Calcula los próximos N meses a pagar, saltando los que ya están pagados.
+// Si el socio debe meses anteriores, esos se cubren primero; si está al día,
+// sigue de largo hacia meses futuros (pago por adelantado).
+function proximosMesesAPagar(socio, socios, cantidad) {
+  const pagos = pagosEfectivos(socio, socios);
+  const pagadoSet = new Set(pagos.map((p) => `${p.anio}-${p.mes}`));
+  const pagado = (mes, anio) => pagadoSet.has(`${anio}-${mes}`);
+  const alta = new Date(socio.createdAt || socio.fechaAlta);
+  let cursor = { mes: alta.getMonth() + 1, anio: alta.getFullYear() };
+  const resultado = [];
+  let i = 0;
+  while (resultado.length < cantidad && i < 240) {
+    if (!pagado(cursor.mes, cursor.anio)) resultado.push({ mes: cursor.mes, anio: cursor.anio });
+    cursor = shiftMonth(cursor.mes, cursor.anio, 1);
+    i++;
+  }
+  return resultado;
+}
+function iconoEstado(estado) {
+  if (estado === "Al día") return CheckCircle2;
+  if (estado === "Pendiente") return Clock;
+  if (estado === "Eximido") return ShieldCheck;
+  return AlertTriangle;
+}
+
+/* ---------- Átomos de UI ---------- */
+function Crest({ size = 40 }) {
+  return <img src="crest.jpg" alt="Escudo Punta Alta Rugby Club" style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", display: "block", flexShrink: 0 }} />;
+}
+function ToastBar({ text }) {
+  if (!text) return null;
+  return (
+    <div style={{ position: "fixed", top: 14, left: "50%", transform: "translateX(-50%)", background: COLORS.navyDark, color: "#fff", padding: "10px 18px", borderRadius: 999, fontSize: 13, fontFamily: BODY_FONT, zIndex: 200, boxShadow: "0 6px 18px rgba(0,0,0,0.25)", maxWidth: "88%", textAlign: "center" }}>
+      {text}
+    </div>
+  );
+}
+function Modal({ title, onClose, children }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(12,20,30,0.5)", zIndex: 100, display: "flex", alignItems: "flex-end" }} onClick={onClose}>
+      <div style={{ background: COLORS.surface, width: "100%", maxHeight: "88vh", overflowY: "auto", borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, fontFamily: BODY_FONT }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 style={{ fontFamily: DISPLAY_FONT, fontSize: 22, fontWeight: 700, color: COLORS.text, margin: 0 }}>{title}</h3>
+          <button onClick={onClose} style={{ color: COLORS.textMuted, background: "none", border: "none" }}><X size={22} /></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+function Field({ label, children }) {
+  return (
+    <div style={{ flex: 1 }}>
+      <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginBottom: 4, fontWeight: 600 }}>{label}</div>
+      {children}
+    </div>
+  );
+}
+function TipoBadge({ tipo }) {
+  const map = { Individual: { bg: COLORS.navy, fg: "#fff" }, Grupal: { bg: COLORS.green, fg: "#fff" }, Adherente: { bg: "#DED7C4", fg: COLORS.text } };
+  const c = map[tipo] || map.Adherente;
+  return <span style={{ background: c.bg, color: c.fg, fontSize: 11, fontWeight: 600, padding: "3px 9px", borderRadius: 999 }}>{tipo}</span>;
+}
+function EstadoPill({ info, small }) {
+  const Icon = iconoEstado(info.estado);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: info.bg, color: info.color, fontWeight: 700, fontSize: small ? 11 : 13, padding: small ? "3px 9px" : "5px 12px", borderRadius: 999 }}>
+      <Icon size={small ? 12 : 15} />
+      {info.estado}{info.meses > 0 ? ` · ${info.meses} ${info.meses === 1 ? "mes" : "meses"}` : ""}
+    </span>
+  );
+}
+function TopHeader({ title, subtitle, onBack, right }) {
+  return (
+    <div style={{ background: COLORS.navy, color: "#fff", padding: "18px 18px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+      {onBack && <button onClick={onBack} style={{ color: "#fff", background: "none", border: "none" }}><ArrowLeft size={22} /></button>}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontFamily: DISPLAY_FONT, fontSize: 24, fontWeight: 700, lineHeight: 1.1 }}>{title}</div>
+        {subtitle && <div style={{ fontSize: 12.5, opacity: 0.75, marginTop: 2 }}>{subtitle}</div>}
+      </div>
+      {right}
+    </div>
+  );
+}
+function BottomNav({ items, active, onChange }) {
+  return (
+    <div style={{ position: "sticky", bottom: 0, background: COLORS.surface, borderTop: `1px solid ${COLORS.border}`, display: "flex", justifyContent: "space-around", padding: "8px 4px 10px" }}>
+      {items.map((it) => {
+        const Icon = it.icon;
+        const isActive = active === it.key;
+        return (
+          <button key={it.key} onClick={() => onChange(it.key)} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3, color: isActive ? COLORS.navy : COLORS.textMuted, background: "none", border: "none", padding: "4px 10px" }}>
+            <Icon size={22} strokeWidth={isActive ? 2.4 : 2} />
+            <span style={{ fontSize: 11, fontWeight: isActive ? 700 : 500 }}>{it.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+function InfoRow({ label, value, last }) {
+  return (
+    <div className="flex items-center justify-between" style={{ padding: "8px 0", borderBottom: last ? "none" : `1px solid ${COLORS.border}`, gap: 12 }}>
+      <span style={{ fontSize: 12.5, color: COLORS.textMuted, flexShrink: 0 }}>{label}</span>
+      <div style={{ fontSize: 13.5, fontWeight: 600, color: COLORS.text, textAlign: "right", flex: 1, minWidth: 0 }}>{value}</div>
+    </div>
+  );
+}
+function Section({ title, icon: Icon, children }) {
+  return (
+    <div style={{ background: COLORS.surface, borderRadius: 12, padding: 16 }}>
+      <div className="flex items-center gap-2 mb-3">
+        <Icon size={17} color={COLORS.navy} />
+        <span style={{ fontFamily: DISPLAY_FONT, fontSize: 17, fontWeight: 700 }}>{title}</span>
+      </div>
+      <div className="flex flex-col gap-3">{children}</div>
+    </div>
+  );
+}
+function RegistrarPagoModal({ mesesDisponibles, cuotaSugerida, onClose, onConfirm }) {
+  const [seleccionados, setSeleccionados] = useState(mesesDisponibles.length ? [`${mesesDisponibles[0].anio}-${mesesDisponibles[0].mes}`] : []);
+  const [montoPorMes, setMontoPorMes] = useState(cuotaSugerida);
+  const [medio, setMedio] = useState("Efectivo");
+  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [guardando, setGuardando] = useState(false);
+
+  const toggle = (key) => setSeleccionados(seleccionados.includes(key) ? seleccionados.filter((k) => k !== key) : [...seleccionados, key]);
+
+  const confirmar = async () => {
+    if (seleccionados.length === 0) return;
+    setGuardando(true);
+    const meses = seleccionados.map((k) => { const [anio, mes] = k.split("-").map(Number); return { mes, anio }; });
+    await onConfirm(meses, montoPorMes, medio, fecha);
+    setGuardando(false);
+  };
+
+  return (
+    <Modal title="Registrar pago" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        {mesesDisponibles.length > 0 && (
+          <Field label="¿Qué mes o meses cubre este pago?">
+            <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 8 }}>
+              {mesesDisponibles.map((m) => {
+                const key = `${m.anio}-${m.mes}`;
+                return (
+                  <label key={key} className="flex items-center gap-2" style={{ fontSize: 13.5, padding: "5px 2px" }}>
+                    <input type="checkbox" checked={seleccionados.includes(key)} onChange={() => toggle(key)} />
+                    {cap(MESES[m.mes - 1])} {m.anio}
+                  </label>
+                );
+              })}
+            </div>
+          </Field>
+        )}
+        <Field label={seleccionados.length > 1 ? "Monto por cada mes" : "Monto"}><input type="number" style={inputStyle} value={montoPorMes} onChange={(e) => setMontoPorMes(e.target.value)} /></Field>
+        {seleccionados.length > 1 && <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginTop: -6 }}>Total: {formatMoney(Number(montoPorMes || 0) * seleccionados.length)} ({seleccionados.length} meses)</div>}
+        <Field label="Medio de pago">
+          <select style={inputStyle} value={medio} onChange={(e) => setMedio(e.target.value)}>
+            <option>Efectivo</option><option>Transferencia</option><option>Mercado Pago</option>
+          </select>
+        </Field>
+        <Field label="Fecha"><input type="date" style={inputStyle} value={fecha} onChange={(e) => setFecha(e.target.value)} /></Field>
+        <button disabled={guardando || seleccionados.length === 0} onClick={confirmar} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none", marginTop: 6, opacity: (guardando || seleccionados.length === 0) ? 0.6 : 1 }}>
+          {guardando ? "Guardando..." : seleccionados.length > 1 ? `Confirmar ${seleccionados.length} pagos` : "Confirmar pago"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- Login ---------- */
+function LoginScreen({ notify }) {
+  const [modo, setModo] = useState("login"); // "login" | "signup"
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [cargando, setCargando] = useState(false);
+  const [avisoConfirmacion, setAvisoConfirmacion] = useState(false);
+
+  const entrar = async () => {
+    if (!email || !password) { notify("Completá el mail y la contraseña."); return; }
+    setCargando(true);
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setCargando(false);
+    if (error) notify("No pudimos ingresar: " + error.message);
+  };
+
+  const crearCuenta = async () => {
+    if (!email || !password) { notify("Completá el mail y la contraseña."); return; }
+    if (password.length < 6) { notify("La contraseña tiene que tener al menos 6 caracteres."); return; }
+    setCargando(true);
+    const { data, error } = await supabase.auth.signUp({ email, password });
+    setCargando(false);
+    if (error) { notify("No pudimos crear la cuenta: " + error.message); return; }
+    if (!data.session) setAvisoConfirmacion(true);
+  };
+
+  if (avisoConfirmacion) {
+    return (
+      <div style={{ minHeight: "100vh", background: `linear-gradient(180deg, ${COLORS.navy}, ${COLORS.navyDark})`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 28, fontFamily: BODY_FONT, textAlign: "center" }}>
+        <Crest size={72} />
+        <div style={{ fontFamily: DISPLAY_FONT, color: "#fff", fontSize: 20, fontWeight: 700, marginTop: 16 }}>Revisá tu mail</div>
+        <div style={{ color: "rgba(255,255,255,0.75)", fontSize: 13.5, marginTop: 8, maxWidth: 280 }}>
+          Te mandamos un mail para confirmar tu cuenta. Confirmalo y después volvé acá para iniciar sesión.
+        </div>
+        <button onClick={() => setAvisoConfirmacion(false)} style={{ marginTop: 20, color: COLORS.green, fontWeight: 700, background: "none", border: "none" }}>Volver</button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ minHeight: "100vh", background: `linear-gradient(180deg, ${COLORS.navy}, ${COLORS.navyDark})`, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 28, fontFamily: BODY_FONT }}>
+      <Crest size={84} />
+      <div style={{ fontFamily: DISPLAY_FONT, color: "#fff", fontSize: 28, fontWeight: 700, marginTop: 14, letterSpacing: 0.5, textAlign: "center" }}>PUNTA ALTA RUGBY CLUB</div>
+      <div style={{ color: COLORS.green, fontSize: 13, marginTop: 2, marginBottom: 30, fontWeight: 600 }}>Sistema de gestión de socios</div>
+
+      <div style={{ width: "100%", maxWidth: 340, background: "rgba(255,255,255,0.06)", borderRadius: 18, padding: 18 }}>
+        <div className="flex gap-2" style={{ marginBottom: 16 }}>
+          <button onClick={() => setModo("login")} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: modo === "login" ? COLORS.green : "rgba(255,255,255,0.1)", color: "#fff", border: "none" }}>Ingresar</button>
+          <button onClick={() => setModo("signup")} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: modo === "signup" ? COLORS.green : "rgba(255,255,255,0.1)", color: "#fff", border: "none" }}>Crear cuenta</button>
+        </div>
+        <label style={{ color: "#fff", fontSize: 12.5, opacity: 0.85 }}>Mail</label>
+        <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" className="w-full" style={{ background: "#fff", borderRadius: 10, padding: "10px", marginTop: 6, marginBottom: 12, fontSize: 14, border: "none" }} />
+        <label style={{ color: "#fff", fontSize: 12.5, opacity: 0.85 }}>Contraseña</label>
+        <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" className="w-full" style={{ background: "#fff", borderRadius: 10, padding: "10px", marginTop: 6, marginBottom: 16, fontSize: 14, border: "none" }} onKeyDown={(e) => e.key === "Enter" && (modo === "login" ? entrar() : crearCuenta())} />
+        {modo === "login" ? (
+          <button disabled={cargando} onClick={entrar} className="w-full" style={{ background: COLORS.green, color: "#fff", fontWeight: 700, padding: "13px 0", borderRadius: 12, fontSize: 15, border: "none", opacity: cargando ? 0.7 : 1 }}>
+            {cargando ? "Ingresando..." : "Ingresar"}
+          </button>
+        ) : (
+          <button disabled={cargando} onClick={crearCuenta} className="w-full" style={{ background: COLORS.green, color: "#fff", fontWeight: 700, padding: "13px 0", borderRadius: 12, fontSize: 15, border: "none", opacity: cargando ? 0.7 : 1 }}>
+            {cargando ? "Creando..." : "Crear cuenta"}
+          </button>
+        )}
+      </div>
+
+      <div style={{ color: "rgba(255,255,255,0.55)", fontSize: 11.5, marginTop: 24, textAlign: "center", maxWidth: 300 }}>
+        Si sos socio y todavía no tenés cuenta, tocá "Crear cuenta". Si ya la creaste, después vas a tener que vincularla con tu número de socio y tu DNI.
+      </div>
+    </div>
+  );
+}
+
+function VincularScreen({ onVinculado, onSalir, notify }) {
+  const [socioId, setSocioId] = useState("");
+  const [dni, setDni] = useState("");
+  const [cargando, setCargando] = useState(false);
+
+  const vincular = async () => {
+    if (!socioId || !dni) { notify("Completá tu número de socio y tu DNI."); return; }
+    setCargando(true);
+    const { data, error } = await supabase.rpc("vincular_socio", { p_socio_id: Number(socioId), p_dni: dni });
+    setCargando(false);
+    if (error) { notify("Error: " + error.message); return; }
+    if (!data.ok) { notify(data.error); return; }
+    notify("¡Cuenta vinculada!");
+    await onVinculado();
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 28, fontFamily: BODY_FONT }}>
+      <Crest size={72} />
+      <div style={{ fontFamily: DISPLAY_FONT, fontSize: 22, fontWeight: 700, marginTop: 16, color: COLORS.text, textAlign: "center" }}>Vinculá tu cuenta</div>
+      <div style={{ fontSize: 13.5, color: COLORS.textMuted, marginTop: 6, marginBottom: 20, textAlign: "center", maxWidth: 300 }}>
+        Ingresá tu número de socio y tu DNI, tal como están registrados en el club.
+      </div>
+      <div style={{ width: "100%", maxWidth: 320 }}>
+        <Field label="Número de socio"><input type="number" style={inputStyle} value={socioId} onChange={(e) => setSocioId(e.target.value)} /></Field>
+        <div style={{ height: 10 }} />
+        <Field label="DNI"><input style={inputStyle} value={dni} onChange={(e) => setDni(e.target.value)} /></Field>
+        <button disabled={cargando} onClick={vincular} className="w-full" style={{ marginTop: 16, background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "13px 0", borderRadius: 12, border: "none", opacity: cargando ? 0.7 : 1 }}>
+          {cargando ? "Vinculando..." : "Vincular cuenta"}
+        </button>
+        <button onClick={onSalir} className="w-full" style={{ marginTop: 10, background: "none", border: "none", color: COLORS.textMuted, fontSize: 13 }}>Cerrar sesión</button>
+      </div>
+    </div>
+  );
+}
+
+function SinAcceso({ onExit }) {
+  return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 28, fontFamily: BODY_FONT, textAlign: "center" }}>
+      <Crest size={64} />
+      <div style={{ fontFamily: DISPLAY_FONT, fontSize: 22, fontWeight: 700, marginTop: 16, color: COLORS.text }}>Tu cuenta todavía no está habilitada</div>
+      <div style={{ fontSize: 13.5, color: COLORS.textMuted, marginTop: 8, maxWidth: 300 }}>
+        Esta primera versión es solo para administradores. Si sos socio, el ingreso se habilita en el próximo paso.
+      </div>
+      <button onClick={onExit} style={{ marginTop: 20, color: COLORS.navy, fontWeight: 700, background: "none", border: "none" }}>Volver</button>
+    </div>
+  );
+}
+
+/* ---------- ADMIN: Inicio ---------- */
+function AdminDashboard({ socios, onOpenNotif, onCompose, onExit }) {
+  const activos = socios.filter((s) => s.estado === "Activo");
+  const conteo = { "Al día": 0, "Pendiente": 0, "Deudor": 0 };
+  activos.forEach((s) => { const e = estadoCuota(s, socios).estado; if (conteo[e] !== undefined) conteo[e]++; });
+
+  const pagosRecientes = [];
+  activos.forEach((s) => {
+    if (s.tipo === "Grupal" && !s.esTitular) return;
+    s.pagos.forEach((p) => pagosRecientes.push({ ...p, nombre: s.tipo === "Grupal" ? s.grupoNombre : `${s.nombre} ${s.apellido}` }));
+  });
+  pagosRecientes.sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+  const ultimos = pagosRecientes.slice(0, 5);
+
+  const stats = [
+    { label: "Socios activos", value: activos.length, color: COLORS.navy },
+    { label: "Al día", value: conteo["Al día"], color: COLORS.green },
+    { label: "Pendientes", value: conteo["Pendiente"], color: COLORS.amber },
+    { label: "Deudores", value: conteo["Deudor"], color: COLORS.red },
+  ];
+
+  return (
+    <div style={{ paddingBottom: 12 }}>
+      <TopHeader
+        title="Hola, Admin"
+        subtitle={`${cap(MESES[CURRENT_MONTH - 1])} ${CURRENT_YEAR}`}
+        right={
+          <div className="flex items-center gap-3">
+            <button onClick={onCompose} style={{ color: "#fff", background: "none", border: "none" }}><Send size={20} /></button>
+            <button onClick={onOpenNotif} style={{ color: "#fff", background: "none", border: "none" }}><Bell size={22} /></button>
+            <button onClick={onExit} style={{ color: "#fff", background: "none", border: "none" }}><LogOut size={19} /></button>
+          </div>
+        }
+      />
+      <div className="grid grid-cols-2 gap-3 p-4">
+        {stats.map((s) => (
+          <div key={s.label} style={{ background: COLORS.surface, borderLeft: `5px solid ${s.color}`, borderRadius: 12, padding: 14 }}>
+            <div style={{ fontFamily: DISPLAY_FONT, fontSize: 30, fontWeight: 700, color: COLORS.text, lineHeight: 1 }}>{s.value}</div>
+            <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginTop: 4 }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+      <div className="px-4">
+        <div style={{ fontFamily: DISPLAY_FONT, fontSize: 18, fontWeight: 700, color: COLORS.text, marginBottom: 8 }}>Últimos pagos</div>
+        <div style={{ background: COLORS.surface, borderRadius: 12, overflow: "hidden" }}>
+          {ultimos.length === 0 && <div className="p-4" style={{ color: COLORS.textMuted, fontSize: 13 }}>Todavía no hay pagos registrados.</div>}
+          {ultimos.map((p, i) => (
+            <div key={i} className="flex items-center justify-between px-4 py-3" style={{ borderBottom: i < ultimos.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: COLORS.text }}>{p.nombre}</div>
+                <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>{cap(MESES[p.mes - 1])} {p.anio} · {p.medio} · {formatFechaISO(p.fecha)}</div>
+              </div>
+              <div style={{ fontFamily: DISPLAY_FONT, fontWeight: 700, color: COLORS.navy }}>{formatMoney(p.monto)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- ADMIN: Nuevo socio ---------- */
+function NuevoSocioModal({ socios, cuotaConfig, onClose, notify, onChanged }) {
+  const nextId = socios.length ? Math.max(...socios.map((s) => s.id)) + 1 : 1;
+  const [form, setForm] = useState({ id: nextId, nombre: "", apellido: "", dni: "", whatsapp: "", domicilio: "", tipo: "Individual", grupoNombre: "", fechaAlta: new Date().toISOString().slice(0, 10), cuota: cuotaConfig.Individual, eximido: false });
+  const [modoGrupo, setModoGrupo] = useState("nuevo"); // "nuevo" | "existente"
+  const [grupoElegido, setGrupoElegido] = useState("");
+  const [guardando, setGuardando] = useState(false);
+
+  const grupos = listaDeGrupos(socios);
+  const gruposConLugar = grupos.filter((g) => g.integrantes < 4);
+
+  const onTipoChange = (tipo) => setForm({ ...form, tipo, cuota: cuotaConfig[tipo] });
+
+  const submit = async () => {
+    if (!form.nombre || !form.apellido || !form.dni) { notify("Completá al menos nombre, apellido y DNI."); return; }
+    if (form.tipo === "Grupal" && modoGrupo === "nuevo" && !form.grupoNombre) { notify("Ponele un nombre al grupo."); return; }
+    if (form.tipo === "Grupal" && modoGrupo === "existente" && !grupoElegido) { notify("Elegí a qué grupo sumarlo."); return; }
+
+    let grupoId = null, esTitular = false, grupoNombre = null, cuota = Number(form.cuota);
+    if (form.tipo === "Grupal") {
+      if (modoGrupo === "nuevo") {
+        grupoId = `g${form.id}`; esTitular = true; grupoNombre = form.grupoNombre; cuota = Number(form.cuota);
+      } else {
+        const g = grupos.find((x) => x.grupoId === grupoElegido);
+        if (!g) { notify("Ese grupo ya no está disponible."); return; }
+        if (g.integrantes >= 4) { notify("Ese grupo ya tiene 4 integrantes (el máximo permitido)."); return; }
+        grupoId = g.grupoId; esTitular = false; grupoNombre = g.grupoNombre; cuota = g.cuota;
+      }
+    }
+
+    setGuardando(true);
+    const { error } = await supabase.from("socios").insert({
+      id: Number(form.id), nombre: form.nombre, apellido: form.apellido, dni: form.dni,
+      whatsapp: form.whatsapp, domicilio: form.domicilio, tipo: form.tipo, cuota,
+      estado: "Activo", grupo_id: grupoId, es_titular: esTitular, grupo_nombre: grupoNombre,
+      fecha_alta: form.fechaAlta, eximido: !!form.eximido,
+    });
+    if (error) { setGuardando(false); notify("Error: " + error.message); return; }
+    await supabase.from("historial_tipo").insert({ socio_id: Number(form.id), tipo: form.tipo, desde: form.fechaAlta });
+    setGuardando(false);
+    notify(`Socio ${form.nombre} ${form.apellido} creado con N° ${form.id}.`);
+    await onChanged();
+    onClose();
+  };
+
+  return (
+    <Modal title="Nuevo socio" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <Field label="N° de socio (editable en modo prueba)"><input type="number" style={inputStyle} value={form.id} onChange={(e) => setForm({ ...form, id: e.target.value })} /></Field>
+        <div className="flex gap-3">
+          <Field label="Nombre"><input style={inputStyle} value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} /></Field>
+          <Field label="Apellido"><input style={inputStyle} value={form.apellido} onChange={(e) => setForm({ ...form, apellido: e.target.value })} /></Field>
+        </div>
+        <Field label="DNI"><input style={inputStyle} value={form.dni} onChange={(e) => setForm({ ...form, dni: e.target.value })} /></Field>
+        <Field label="WhatsApp"><input style={inputStyle} value={form.whatsapp} onChange={(e) => setForm({ ...form, whatsapp: e.target.value })} /></Field>
+        <Field label="Domicilio"><input style={inputStyle} value={form.domicilio} onChange={(e) => setForm({ ...form, domicilio: e.target.value })} /></Field>
+        <Field label="Tipo de socio">
+          <select style={inputStyle} value={form.tipo} onChange={(e) => onTipoChange(e.target.value)}>
+            <option>Individual</option><option>Grupal</option><option>Adherente</option>
+          </select>
+        </Field>
+
+        {form.tipo === "Grupal" && (
+          <div style={{ background: COLORS.bg, borderRadius: 10, padding: 12 }}>
+            <div className="flex gap-2" style={{ marginBottom: 10 }}>
+              <button onClick={() => setModoGrupo("nuevo")} style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontWeight: 700, fontSize: 12.5, background: modoGrupo === "nuevo" ? COLORS.navy : COLORS.surface, color: modoGrupo === "nuevo" ? "#fff" : COLORS.text, border: `1px solid ${modoGrupo === "nuevo" ? COLORS.navy : COLORS.border}` }}>Nuevo grupo</button>
+              <button onClick={() => setModoGrupo("existente")} style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontWeight: 700, fontSize: 12.5, background: modoGrupo === "existente" ? COLORS.navy : COLORS.surface, color: modoGrupo === "existente" ? "#fff" : COLORS.text, border: `1px solid ${modoGrupo === "existente" ? COLORS.navy : COLORS.border}` }}>Sumar a un grupo</button>
+            </div>
+
+            {modoGrupo === "nuevo" ? (
+              <Field label="Nombre del grupo (ej: Familia Pérez)"><input style={inputStyle} value={form.grupoNombre} onChange={(e) => setForm({ ...form, grupoNombre: e.target.value })} /></Field>
+            ) : gruposConLugar.length === 0 ? (
+              <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Todavía no hay ningún grupo con lugar disponible. Creá uno nuevo primero.</div>
+            ) : (
+              <Field label="Elegir grupo">
+                <select style={inputStyle} value={grupoElegido} onChange={(e) => setGrupoElegido(e.target.value)}>
+                  <option value="">Seleccioná un grupo...</option>
+                  {gruposConLugar.map((g) => (
+                    <option key={g.grupoId} value={g.grupoId}>{g.grupoNombre} ({g.integrantes}/4 integrantes)</option>
+                  ))}
+                </select>
+              </Field>
+            )}
+            {modoGrupo === "existente" && grupoElegido && (
+              <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 6 }}>Este socio no será titular: la cuota del grupo se sigue cobrando a nombre de quien ya es titular.</div>
+            )}
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <Field label="Fecha de alta"><input type="date" style={inputStyle} value={form.fechaAlta} onChange={(e) => setForm({ ...form, fechaAlta: e.target.value })} /></Field>
+          <Field label="Cuota"><input type="number" style={inputStyle} value={form.cuota} onChange={(e) => setForm({ ...form, cuota: e.target.value })} disabled={form.tipo === "Grupal" && modoGrupo === "existente"} /></Field>
+        </div>
+        <label className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 600 }}>
+          <input type="checkbox" checked={form.eximido} onChange={(e) => setForm({ ...form, eximido: e.target.checked })} />
+          Eximido de cuota (no se le cobra ni genera deuda)
+        </label>
+        <button disabled={guardando} onClick={submit} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none", marginTop: 6, opacity: guardando ? 0.6 : 1 }}>
+          {guardando ? "Creando..." : "Crear socio"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- ADMIN: Detalle de socio ---------- */
+function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({ dni: socio.dni, whatsapp: socio.whatsapp, domicilio: socio.domicilio, tipo: socio.tipo, cuota: socio.cuota, fechaAlta: socio.fechaAlta, eximido: socio.eximido });
+  const [modoGrupo, setModoGrupo] = useState("nuevo");
+  const [grupoElegido, setGrupoElegido] = useState("");
+  const [grupoNombreNuevo, setGrupoNombreNuevo] = useState("");
+  const [showBaja, setShowBaja] = useState(false);
+  const [showPago, setShowPago] = useState(false);
+
+  const info = estadoCuota(socio, socios);
+  const integrantes = socio.grupoId ? socios.filter((s) => s.grupoId === socio.grupoId) : [];
+  const titular = integrantes.find((i) => i.esTitular);
+  const pasandoAGrupal = form.tipo === "Grupal" && socio.tipo !== "Grupal";
+  const gruposConLugar = listaDeGrupos(socios).filter((g) => g.integrantes < 4);
+
+  const guardar = async () => {
+    const cambios = [];
+    const hoy = new Date().toISOString().slice(0, 10);
+    if (form.dni !== socio.dni) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "DNI", anterior: socio.dni, nuevo: form.dni });
+    if (form.whatsapp !== socio.whatsapp) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "WhatsApp", anterior: socio.whatsapp, nuevo: form.whatsapp });
+    if (form.domicilio !== socio.domicilio) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Domicilio", anterior: socio.domicilio, nuevo: form.domicilio });
+    if (!!form.eximido !== !!socio.eximido) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Eximido de cuota", anterior: socio.eximido ? "Sí" : "No", nuevo: form.eximido ? "Sí" : "No" });
+    if (form.fechaAlta !== socio.fechaAlta) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Fecha de alta", anterior: formatFechaISO(socio.fechaAlta), nuevo: formatFechaISO(form.fechaAlta) });
+
+    const payload = { dni: form.dni, whatsapp: form.whatsapp, domicilio: form.domicilio, tipo: form.tipo, fecha_alta: form.fechaAlta, eximido: !!form.eximido };
+
+    if (pasandoAGrupal) {
+      if (modoGrupo === "nuevo") {
+        if (!grupoNombreNuevo) { notify("Ponele un nombre al grupo."); return; }
+        payload.grupo_id = `g${socio.id}`; payload.es_titular = true; payload.grupo_nombre = grupoNombreNuevo; payload.cuota = Number(form.cuota);
+      } else {
+        const g = gruposConLugar.find((x) => x.grupoId === grupoElegido);
+        if (!g) { notify("Elegí a qué grupo sumarlo."); return; }
+        payload.grupo_id = g.grupoId; payload.es_titular = false; payload.grupo_nombre = g.grupoNombre; payload.cuota = g.cuota;
+      }
+    } else {
+      payload.cuota = Number(form.cuota);
+    }
+    if (Number(payload.cuota) !== socio.cuota) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Cuota", anterior: formatMoney(socio.cuota), nuevo: formatMoney(payload.cuota) });
+
+    const { error } = await supabase.from("socios").update(payload).eq("id", socio.id);
+    if (error) { notify("Error: " + error.message); return; }
+    if (form.tipo !== socio.tipo) {
+      cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Tipo de socio", anterior: socio.tipo, nuevo: form.tipo });
+      await supabase.from("historial_tipo").insert({ socio_id: socio.id, tipo: form.tipo, desde: hoy });
+    }
+    if (cambios.length) await supabase.from("historial_cambios").insert(cambios);
+    notify("Datos del socio actualizados.");
+    setEditing(false);
+    await onChanged();
+  };
+
+  const confirmarBaja = async () => {
+    const hoy = new Date().toISOString().slice(0, 10);
+    await supabase.from("socios").update({ estado: "Inactivo" }).eq("id", socio.id);
+    await supabase.from("historial_cambios").insert({ socio_id: socio.id, fecha: hoy, campo: "Estado", anterior: "Activo", nuevo: "Inactivo (baja)" });
+    notify(`${socio.nombre} ${socio.apellido} fue dado de baja.`);
+    setShowBaja(false);
+    await onChanged();
+    onBack();
+  };
+
+  const reactivar = async () => {
+    await supabase.from("socios").update({ estado: "Activo" }).eq("id", socio.id);
+    notify(`${socio.nombre} ${socio.apellido} fue reactivado.`);
+    await onChanged();
+    onBack();
+  };
+
+  const registrarPago = async (meses, montoPorMes, medio, fecha) => {
+    const targetId = socio.grupoId ? socios.find((s) => s.grupoId === socio.grupoId && s.esTitular)?.id : socio.id;
+    const filas = meses.map((m) => ({ socio_id: targetId, mes: m.mes, anio: m.anio, monto: Number(montoPorMes), medio, fecha }));
+    const { error } = await supabase.from("pagos").insert(filas);
+    if (error) { notify(error.code === "23505" ? "Alguno de esos meses ya tiene un pago registrado." : "Error: " + error.message); return; }
+    notify(meses.length > 1 ? `${meses.length} pagos registrados correctamente.` : "Pago registrado correctamente.");
+    setShowPago(false);
+    await onChanged();
+  };
+
+  const handleFotoChange = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (file.size > 3 * 1024 * 1024) { notify("La imagen es muy pesada. Probá con una de menos de 3MB."); return; }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const { error } = await supabase.from("socios").update({ foto_url: reader.result }).eq("id", socio.id);
+      if (error) { notify("Error: " + error.message); return; }
+      notify("Foto actualizada.");
+      await onChanged();
+    };
+    reader.readAsDataURL(file);
+  };
+  const quitarFoto = async () => {
+    await supabase.from("socios").update({ foto_url: null }).eq("id", socio.id);
+    notify("Foto eliminada.");
+    await onChanged();
+  };
+
+  const pagosOrdenados = [...pagosEfectivos(socio, socios)].sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <TopHeader title={`${socio.nombre} ${socio.apellido}`} subtitle={`N° ${socio.id}`} onBack={onBack} />
+      <div className="p-4 flex items-center justify-between">
+        <EstadoPill info={info} />
+        {socio.estado === "Inactivo" && <span style={{ fontSize: 12, fontWeight: 700, color: COLORS.textMuted }}>DADO DE BAJA</span>}
+      </div>
+
+      <div className="px-4">
+        <div style={{ background: COLORS.surface, borderRadius: 12, padding: 16 }}>
+          <div className="flex items-center gap-3" style={{ marginBottom: 16 }}>
+            <div style={{ width: 60, height: 60, borderRadius: 999, overflow: "hidden", background: COLORS.bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: `1px solid ${COLORS.border}` }}>
+              {socio.foto ? <img src={socio.foto} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span style={{ fontFamily: DISPLAY_FONT, fontSize: 20, fontWeight: 700, color: COLORS.textMuted }}>{socio.nombre[0]}{socio.apellido[0]}</span>}
+            </div>
+            {socio.estado === "Activo" && (
+              <div>
+                <label style={{ fontSize: 12.5, fontWeight: 700, color: COLORS.navy, cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}>
+                  <Camera size={14} /> {socio.foto ? "Cambiar foto" : "Agregar foto"}
+                  <input type="file" accept="image/*" style={{ display: "none" }} onChange={handleFotoChange} />
+                </label>
+                {socio.foto && <button onClick={quitarFoto} style={{ fontSize: 11.5, color: COLORS.textMuted, marginTop: 4, background: "none", border: "none" }}>Quitar foto</button>}
+              </div>
+            )}
+          </div>
+          <div className="flex items-center justify-between mb-3">
+            <span style={{ fontFamily: DISPLAY_FONT, fontSize: 18, fontWeight: 700 }}>Datos del socio</span>
+            {socio.estado === "Activo" && (
+              <button onClick={() => (editing ? guardar() : setEditing(true))} style={{ color: COLORS.navy, fontSize: 12.5, fontWeight: 700, display: "flex", alignItems: "center", gap: 4, background: "none", border: "none" }}>
+                {editing ? <><Check size={14} /> Guardar</> : <><Edit2 size={14} /> Editar</>}
+              </button>
+            )}
+          </div>
+          <InfoRow label="DNI" value={editing ? <input style={inputStyle} value={form.dni} onChange={(e) => setForm({ ...form, dni: e.target.value })} /> : socio.dni} />
+          <InfoRow label="WhatsApp" value={editing ? <input style={inputStyle} value={form.whatsapp} onChange={(e) => setForm({ ...form, whatsapp: e.target.value })} /> : socio.whatsapp} />
+          <InfoRow label="Domicilio" value={editing ? <input style={inputStyle} value={form.domicilio} onChange={(e) => setForm({ ...form, domicilio: e.target.value })} /> : socio.domicilio} />
+          <InfoRow label="Fecha de alta" value={editing ? <input type="date" style={inputStyle} value={form.fechaAlta} onChange={(e) => setForm({ ...form, fechaAlta: e.target.value })} /> : formatFechaISO(socio.fechaAlta)} />
+          <InfoRow label="Tipo de socio" value={editing ? (
+            <select style={inputStyle} value={form.tipo} onChange={(e) => setForm({ ...form, tipo: e.target.value })}><option>Individual</option><option>Grupal</option><option>Adherente</option></select>
+          ) : <TipoBadge tipo={socio.tipo} />} />
+          {editing && pasandoAGrupal && (
+            <div style={{ background: COLORS.bg, borderRadius: 10, padding: 12, margin: "8px 0" }}>
+              <div className="flex gap-2" style={{ marginBottom: 10 }}>
+                <button onClick={() => setModoGrupo("nuevo")} style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontWeight: 700, fontSize: 12.5, background: modoGrupo === "nuevo" ? COLORS.navy : COLORS.surface, color: modoGrupo === "nuevo" ? "#fff" : COLORS.text, border: `1px solid ${modoGrupo === "nuevo" ? COLORS.navy : COLORS.border}` }}>Nuevo grupo</button>
+                <button onClick={() => setModoGrupo("existente")} style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontWeight: 700, fontSize: 12.5, background: modoGrupo === "existente" ? COLORS.navy : COLORS.surface, color: modoGrupo === "existente" ? "#fff" : COLORS.text, border: `1px solid ${modoGrupo === "existente" ? COLORS.navy : COLORS.border}` }}>Sumar a un grupo</button>
+              </div>
+              {modoGrupo === "nuevo" ? (
+                <Field label="Nombre del grupo (ej: Familia Pérez)"><input style={inputStyle} value={grupoNombreNuevo} onChange={(e) => setGrupoNombreNuevo(e.target.value)} /></Field>
+              ) : gruposConLugar.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Todavía no hay ningún grupo con lugar disponible.</div>
+              ) : (
+                <Field label="Elegir grupo">
+                  <select style={inputStyle} value={grupoElegido} onChange={(e) => setGrupoElegido(e.target.value)}>
+                    <option value="">Seleccioná un grupo...</option>
+                    {gruposConLugar.map((g) => (
+                      <option key={g.grupoId} value={g.grupoId}>{g.grupoNombre} ({g.integrantes}/4 integrantes)</option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+            </div>
+          )}
+          <InfoRow label="Cuota" value={editing ? <input type="number" style={inputStyle} value={form.cuota} onChange={(e) => setForm({ ...form, cuota: e.target.value })} disabled={pasandoAGrupal} /> : formatMoney(socio.cuota)} last={!editing} />
+          {editing && (
+            <div style={{ paddingTop: 10 }}>
+              <label className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 600 }}>
+                <input type="checkbox" checked={!!form.eximido} onChange={(e) => setForm({ ...form, eximido: e.target.checked })} />
+                Eximido de cuota (no se le cobra ni genera deuda)
+              </label>
+            </div>
+          )}
+        </div>
+      </div>
+      {socio.eximido && !editing && (
+        <div className="px-4 mt-2">
+          <span style={{ background: COLORS.exentoLight, color: COLORS.exento, fontSize: 11.5, fontWeight: 700, padding: "4px 10px", borderRadius: 999 }}>Eximido de cuota</span>
+        </div>
+      )}
+
+      {integrantes.length > 0 && (
+        <div className="px-4 mt-3">
+          <div style={{ background: COLORS.surface, borderRadius: 12, padding: 16 }}>
+            <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700, marginBottom: 8 }}>{socio.grupoNombre} · Integrantes</div>
+            {integrantes.map((it) => (
+              <div key={it.id} className="flex items-center justify-between" style={{ padding: "6px 0", fontSize: 13.5 }}>
+                <span>{it.nombre} {it.apellido} {it.esTitular ? "(titular)" : ""}</span>
+                <span style={{ color: COLORS.textMuted }}>N° {it.id}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="px-4 mt-3">
+        <div style={{ background: COLORS.surface, borderRadius: 12, padding: 16 }}>
+          <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Historial de tipo de socio</div>
+          {socio.historialTipo.map((h, i) => (
+            <div key={i} style={{ fontSize: 13, padding: "4px 0" }}><TipoBadge tipo={h.tipo} /> <span style={{ color: COLORS.textMuted }}>desde {formatFechaISO(h.desde)}</span></div>
+          ))}
+        </div>
+      </div>
+
+      {socio.grupoId && !socio.esTitular && titular && (
+        <div className="px-4 mt-3" style={{ fontSize: 12, color: COLORS.textMuted }}>
+          Los pagos de este grupo se registran a nombre del titular ({titular.nombre} {titular.apellido}).
+        </div>
+      )}
+
+      <div className="px-4 mt-3 flex items-center justify-between">
+        <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700 }}>Historial de pagos</div>
+        {socio.estado === "Activo" && <button onClick={() => setShowPago(true)} style={{ color: COLORS.green, fontSize: 12.5, fontWeight: 700, background: "none", border: "none" }}>+ Registrar pago</button>}
+      </div>
+      <div className="px-4 mt-2">
+        <div style={{ background: COLORS.surface, borderRadius: 12, overflow: "hidden" }}>
+          {pagosOrdenados.length === 0 && <div className="p-4" style={{ color: COLORS.textMuted, fontSize: 13 }}>Sin pagos registrados.</div>}
+          {pagosOrdenados.map((p, i) => (
+            <div key={i} className="flex items-center justify-between px-4 py-3" style={{ borderBottom: i < pagosOrdenados.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
+              <div>
+                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{cap(MESES[p.mes - 1])} {p.anio}</div>
+                <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>{p.medio} · {formatFechaISO(p.fecha)}</div>
+              </div>
+              <div style={{ fontWeight: 700, color: COLORS.navy }}>{formatMoney(p.monto)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {socio.historialCambios.length > 0 && (
+        <div className="px-4 mt-3">
+          <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Historial de modificaciones</div>
+          <div style={{ background: COLORS.surface, borderRadius: 12, overflow: "hidden" }}>
+            {[...socio.historialCambios].reverse().map((c, i) => (
+              <div key={i} className="px-4 py-3" style={{ borderBottom: i < socio.historialCambios.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
+                <div style={{ fontSize: 13, fontWeight: 600 }}>{c.campo}</div>
+                <div style={{ fontSize: 12, color: COLORS.textMuted }}>{c.anterior} → {c.nuevo} · {formatFechaISO(c.fecha)}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="px-4 mt-6">
+        {socio.estado === "Activo" ? (
+          <button onClick={() => setShowBaja(true)} className="w-full" style={{ background: COLORS.redLight, color: COLORS.red, fontWeight: 700, padding: "13px 0", borderRadius: 10, border: "none" }}>Dar de baja</button>
+        ) : (
+          <button onClick={reactivar} className="w-full" style={{ background: COLORS.greenLight, color: COLORS.green, fontWeight: 700, padding: "13px 0", borderRadius: 10, border: "none" }}>Reactivar socio</button>
+        )}
+      </div>
+
+      {showBaja && (
+        <Modal title="Confirmar baja" onClose={() => setShowBaja(false)}>
+          <p style={{ fontSize: 14, color: COLORS.text, marginBottom: 16 }}>¿Confirmás la baja de <b>{socio.nombre} {socio.apellido}</b>? Sus datos no se eliminan, pero dejará de aparecer en el listado de socios activos.</p>
+          <div className="flex gap-3">
+            <button onClick={() => setShowBaja(false)} className="w-full" style={{ padding: "12px 0", borderRadius: 10, border: `1px solid ${COLORS.border}`, fontWeight: 600, background: "none" }}>Cancelar</button>
+            <button onClick={confirmarBaja} className="w-full" style={{ padding: "12px 0", borderRadius: 10, background: COLORS.red, color: "#fff", fontWeight: 700, border: "none" }}>Confirmar baja</button>
+          </div>
+        </Modal>
+      )}
+      {showPago && <RegistrarPagoModal mesesDisponibles={mesesDisponiblesParaPago(socio, socios, info)} cuotaSugerida={socio.cuota} onClose={() => setShowPago(false)} onConfirm={registrarPago} />}
+    </div>
+  );
+}
+
+/* ---------- ADMIN: Socios ---------- */
+function AdminSocios({ socios, cuotaConfig, notify, onChanged }) {
+  const [selectedId, setSelectedId] = useState(null);
+  const [showNew, setShowNew] = useState(false);
+  const [showInactivos, setShowInactivos] = useState(false);
+  const [query, setQuery] = useState("");
+  const [tipoFiltro, setTipoFiltro] = useState("Todos");
+
+  const selected = socios.find((s) => s.id === selectedId);
+  if (selected) return <SocioDetail socio={selected} socios={socios} onBack={() => setSelectedId(null)} notify={notify} onChanged={onChanged} />;
+
+  const base = socios.filter((s) => (showInactivos ? s.estado === "Inactivo" : s.estado === "Activo"));
+  const filtrados = base.filter((s) => {
+    if (tipoFiltro !== "Todos" && s.tipo !== tipoFiltro) return false;
+    if (!query) return true;
+    const q = query.toLowerCase();
+    return `${s.nombre} ${s.apellido}`.toLowerCase().includes(q) || String(s.id).includes(q) || s.tipo.toLowerCase().includes(q);
+  });
+  const cantInactivos = socios.filter((s) => s.estado === "Inactivo").length;
+
+  return (
+    <div>
+      <TopHeader title="Socios" subtitle={`${base.length} ${showInactivos ? "dados de baja" : "activos"}`} />
+      <div className="p-4 pb-2">
+        <div className="flex items-center gap-2" style={{ background: COLORS.surface, borderRadius: 10, padding: "9px 12px" }}>
+          <Search size={17} color={COLORS.textMuted} />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar por nombre, N° o tipo" className="w-full" style={{ fontSize: 14, outline: "none", border: "none" }} />
+        </div>
+        <div className="flex gap-2 mt-3" style={{ overflowX: "auto" }}>
+          {["Todos", "Individual", "Grupal", "Adherente"].map((t) => (
+            <button key={t} onClick={() => setTipoFiltro(t)} style={{ whiteSpace: "nowrap", fontSize: 12.5, fontWeight: 600, padding: "6px 13px", borderRadius: 999, background: tipoFiltro === t ? COLORS.navy : COLORS.surface, color: tipoFiltro === t ? "#fff" : COLORS.text, border: `1px solid ${tipoFiltro === t ? COLORS.navy : COLORS.border}` }}>
+              {t}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="px-4">
+        {filtrados.map((s) => {
+          const info = estadoCuota(s, socios);
+          return (
+            <button key={s.id} onClick={() => setSelectedId(s.id)} className="w-full flex items-center justify-between" style={{ background: COLORS.surface, borderRadius: 12, padding: "12px 14px", marginBottom: 8, textAlign: "left", border: "none" }}>
+              <div className="flex items-center gap-3" style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 999, overflow: "hidden", background: COLORS.bg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  {s.foto ? <img src={s.foto} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <span style={{ fontFamily: DISPLAY_FONT, fontSize: 13, fontWeight: 700, color: COLORS.textMuted }}>{s.nombre[0]}{s.apellido[0]}</span>}
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div className="flex items-center gap-2">
+                    <span style={{ fontSize: 14.5, fontWeight: 700, color: COLORS.text }}>{s.nombre} {s.apellido}</span>
+                    <TipoBadge tipo={s.tipo} />
+                    {s.eximido && <span style={{ background: COLORS.exentoLight, color: COLORS.exento, fontSize: 10.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999 }}>Eximido</span>}
+                  </div>
+                  <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 3 }}>N° {s.id}{s.grupoNombre ? ` · ${s.grupoNombre}` : ""}</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2" style={{ flexShrink: 0 }}>
+                <span style={{ width: 9, height: 9, borderRadius: 999, background: info.color }} />
+                <ChevronRight size={18} color={COLORS.textMuted} />
+              </div>
+            </button>
+          );
+        })}
+        {filtrados.length === 0 && <div style={{ color: COLORS.textMuted, fontSize: 13.5, textAlign: "center", padding: "30px 0" }}>No se encontraron socios.</div>}
+      </div>
+
+      <div className="px-4 pb-4 pt-2 flex justify-center">
+        <button onClick={() => setShowInactivos(!showInactivos)} style={{ color: COLORS.navy, fontSize: 12.5, fontWeight: 600, background: "none", border: "none" }}>
+          {showInactivos ? "← Ver socios activos" : `Ver socios dados de baja (${cantInactivos})`}
+        </button>
+      </div>
+
+      {!showInactivos && (
+        <button onClick={() => setShowNew(true)} style={{ position: "fixed", right: 20, bottom: 92, background: COLORS.gold, color: COLORS.navyDark, width: 54, height: 54, borderRadius: 999, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 8px 18px rgba(0,0,0,0.25)", border: "none" }}>
+          <Plus size={26} strokeWidth={2.6} />
+        </button>
+      )}
+      {showNew && <NuevoSocioModal socios={socios} cuotaConfig={cuotaConfig} onClose={() => setShowNew(false)} notify={notify} onChanged={onChanged} />}
+    </div>
+  );
+}
+
+/* ---------- ADMIN: Reporte ---------- */
+function ReporteModal({ socios, onClose, notify }) {
+  const [tipo, setTipo] = useState("Mensual");
+  const [mes, setMes] = useState(CURRENT_MONTH);
+  const [anio, setAnio] = useState(CURRENT_YEAR);
+  const [trimestre, setTrimestre] = useState(1);
+  const [resultado, setResultado] = useState(null);
+
+  const generar = () => {
+    let meses = [];
+    if (tipo === "Mensual") meses = [{ mes, anio }];
+    if (tipo === "Trimestral") { const startMes = (trimestre - 1) * 3 + 1; meses = [0, 1, 2].map((i) => shiftMonth(startMes, anio, i)); }
+    if (tipo === "Anual") meses = Array.from({ length: 12 }, (_, i) => ({ mes: i + 1, anio }));
+    const set = new Set(meses.map((m) => `${m.anio}-${m.mes}`));
+    let total = 0, cantidad = 0;
+    const porTipo = { Individual: 0, Grupal: 0, Adherente: 0 };
+    socios.forEach((s) => {
+      if (s.tipo === "Grupal" && !s.esTitular) return;
+      s.pagos.forEach((p) => { if (set.has(`${p.anio}-${p.mes}`)) { total += p.monto; cantidad += 1; porTipo[s.tipo] += p.monto; } });
+    });
+    setResultado({ total, cantidad, porTipo });
+  };
+
+  return (
+    <Modal title="Generar reporte" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <Field label="Período">
+          <select style={inputStyle} value={tipo} onChange={(e) => { setTipo(e.target.value); setResultado(null); }}><option>Mensual</option><option>Trimestral</option><option>Anual</option></select>
+        </Field>
+        {tipo === "Mensual" && (
+          <div className="flex gap-3">
+            <Field label="Mes"><select style={inputStyle} value={mes} onChange={(e) => setMes(Number(e.target.value))}>{MESES.map((m, i) => <option key={i} value={i + 1}>{cap(m)}</option>)}</select></Field>
+            <Field label="Año"><input type="number" style={inputStyle} value={anio} onChange={(e) => setAnio(Number(e.target.value))} /></Field>
+          </div>
+        )}
+        {tipo === "Trimestral" && (
+          <div className="flex gap-3">
+            <Field label="Trimestre">
+              <select style={inputStyle} value={trimestre} onChange={(e) => setTrimestre(Number(e.target.value))}>
+                <option value={1}>1° (Ene-Mar)</option><option value={2}>2° (Abr-Jun)</option><option value={3}>3° (Jul-Sep)</option><option value={4}>4° (Oct-Dic)</option>
+              </select>
+            </Field>
+            <Field label="Año"><input type="number" style={inputStyle} value={anio} onChange={(e) => setAnio(Number(e.target.value))} /></Field>
+          </div>
+        )}
+        {tipo === "Anual" && <Field label="Año"><input type="number" style={inputStyle} value={anio} onChange={(e) => setAnio(Number(e.target.value))} /></Field>}
+        <button onClick={generar} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none" }}>Generar</button>
+
+        {resultado && (
+          <div style={{ background: COLORS.bg, borderRadius: 12, padding: 14, marginTop: 4 }}>
+            <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Total recaudado</div>
+            <div style={{ fontFamily: DISPLAY_FONT, fontSize: 28, fontWeight: 700, color: COLORS.navy }}>{formatMoney(resultado.total)}</div>
+            <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginTop: 4 }}>{resultado.cantidad} pagos registrados</div>
+            <div style={{ height: 1, background: COLORS.border, margin: "10px 0" }} />
+            {Object.entries(resultado.porTipo).map(([k, v]) => (
+              <div key={k} className="flex items-center justify-between" style={{ fontSize: 13, padding: "3px 0" }}><span>{k}</span><span style={{ fontWeight: 700 }}>{formatMoney(v)}</span></div>
+            ))}
+            <button onClick={() => notify("La exportación a PDF va a estar disponible en una próxima versión.")} className="w-full" style={{ marginTop: 12, padding: "10px 0", borderRadius: 8, border: `1px solid ${COLORS.navy}`, color: COLORS.navy, fontWeight: 700, fontSize: 13, background: "none" }}>
+              Descargar PDF
+            </button>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/* ---------- ADMIN: Pagos ---------- */
+function AdminPagos({ socios, notify, onChanged }) {
+  const [mes, setMes] = useState(CURRENT_MONTH);
+  const [anio, setAnio] = useState(CURRENT_YEAR);
+  const [query, setQuery] = useState("");
+  const [pagoTarget, setPagoTarget] = useState(null);
+  const [showReporte, setShowReporte] = useState(false);
+
+  const activos = socios.filter((s) => s.estado === "Activo");
+  const relevantes = (s) => (s.tipo !== "Grupal" || s.esTitular) && !s.eximido;
+  const cambiarMes = (delta) => { const r = shiftMonth(mes, anio, delta); setMes(r.mes); setAnio(r.anio); };
+  const matchQuery = (s) => {
+    if (!query) return true;
+    const q = query.toLowerCase();
+    return `${s.nombre} ${s.apellido}`.toLowerCase().includes(q) || String(s.id).includes(q) || s.tipo.toLowerCase().includes(q);
+  };
+
+  const pagados = [];
+  const pendientes = [];
+  activos.filter(relevantes).filter(matchQuery).forEach((s) => {
+    const pagos = pagosEfectivos(s, socios);
+    const pago = pagos.find((p) => p.mes === mes && p.anio === anio);
+    const yaEraSocio = new Date(s.createdAt || s.fechaAlta) <= new Date(anio, mes - 1, 28);
+    if (!yaEraSocio) return;
+    if (pago) pagados.push({ socio: s, pago }); else pendientes.push(s);
+  });
+  const cobrado = pagados.reduce((acc, p) => acc + p.pago.monto, 0);
+  const pendienteMonto = pendientes.reduce((acc, s) => acc + s.cuota, 0);
+  const deudores = activos.filter(relevantes).filter(matchQuery).map((s) => ({ s, info: estadoCuota(s, socios) })).filter((x) => x.info.estado === "Deudor");
+
+  const registrarPago = async (socio, mesesElegidos, montoPorMes, medio, fecha) => {
+    const targetId = socio.grupoId ? socios.find((x) => x.grupoId === socio.grupoId && x.esTitular)?.id : socio.id;
+    const filas = mesesElegidos.map((m) => ({ socio_id: targetId, mes: m.mes, anio: m.anio, monto: Number(montoPorMes), medio, fecha }));
+    const { error } = await supabase.from("pagos").insert(filas);
+    if (error) { notify(error.code === "23505" ? "Alguno de esos meses ya tiene un pago registrado." : "Error: " + error.message); return; }
+    notify(mesesElegidos.length > 1 ? `${mesesElegidos.length} pagos registrados.` : "Pago registrado.");
+    setPagoTarget(null);
+    await onChanged();
+  };
+
+  return (
+    <div style={{ paddingBottom: 12 }}>
+      <TopHeader title="Pagos" right={<button onClick={() => setShowReporte(true)} style={{ color: "#fff", background: "none", border: "none" }}><FileText size={20} /></button>} />
+      <div className="p-4 pb-2 flex items-center justify-center gap-4">
+        <button onClick={() => cambiarMes(-1)} style={{ background: "none", border: "none" }}><ChevronLeft color={COLORS.navy} /></button>
+        <span style={{ fontFamily: DISPLAY_FONT, fontSize: 19, fontWeight: 700 }}>{cap(MESES[mes - 1])} {anio}</span>
+        <button onClick={() => cambiarMes(1)} style={{ background: "none", border: "none" }}><ChevronRight color={COLORS.navy} /></button>
+      </div>
+      <div className="px-4 pb-3">
+        <div className="flex items-center gap-2" style={{ background: COLORS.surface, borderRadius: 10, padding: "9px 12px" }}>
+          <Search size={17} color={COLORS.textMuted} />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar socio, N° o tipo" className="w-full" style={{ fontSize: 14, outline: "none", border: "none" }} />
+        </div>
+      </div>
+      <div className="px-4 grid grid-cols-2 gap-3 mb-2">
+        <div style={{ background: COLORS.greenLight, borderRadius: 12, padding: 14 }}>
+          <div style={{ fontSize: 11.5, color: COLORS.green, fontWeight: 700 }}>COBRADO EN EL MES</div>
+          <div style={{ fontFamily: DISPLAY_FONT, fontSize: 24, fontWeight: 700, color: COLORS.green }}>{formatMoney(cobrado)}</div>
+        </div>
+        <div style={{ background: COLORS.amberLight, borderRadius: 12, padding: 14 }}>
+          <div style={{ fontSize: 11.5, color: COLORS.amber, fontWeight: 700 }}>PENDIENTE DEL MES</div>
+          <div style={{ fontFamily: DISPLAY_FONT, fontSize: 24, fontWeight: 700, color: COLORS.amber }}>{formatMoney(pendienteMonto)}</div>
+        </div>
+      </div>
+
+      <div className="px-4 mt-2">
+        <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Pagos registrados</div>
+        <div style={{ background: COLORS.surface, borderRadius: 12, overflow: "hidden", marginBottom: 16 }}>
+          {pagados.length === 0 && <div className="p-4" style={{ color: COLORS.textMuted, fontSize: 13 }}>Sin pagos este mes todavía.</div>}
+          {pagados.map(({ socio, pago }, i) => (
+            <div key={socio.id} className="flex items-center justify-between px-4 py-3" style={{ borderBottom: i < pagados.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
+              <div>
+                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{socio.tipo === "Grupal" ? socio.grupoNombre : `${socio.nombre} ${socio.apellido}`}</div>
+                <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>N° {socio.id} · {pago.medio}</div>
+              </div>
+              <div style={{ fontWeight: 700, color: COLORS.navy }}>{formatMoney(pago.monto)}</div>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Pendientes del mes</div>
+        <div style={{ background: COLORS.surface, borderRadius: 12, overflow: "hidden", marginBottom: 16 }}>
+          {pendientes.length === 0 && <div className="p-4" style={{ color: COLORS.textMuted, fontSize: 13 }}>No hay pagos pendientes. 🎉</div>}
+          {pendientes.map((s, i) => (
+            <div key={s.id} className="flex items-center justify-between px-4 py-3" style={{ borderBottom: i < pendientes.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
+              <div>
+                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{s.tipo === "Grupal" ? s.grupoNombre : `${s.nombre} ${s.apellido}`}</div>
+                <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>N° {s.id} · {formatMoney(s.cuota)}</div>
+              </div>
+              <button onClick={() => setPagoTarget(s)} style={{ fontSize: 12, fontWeight: 700, color: COLORS.navy, border: `1px solid ${COLORS.navy}`, borderRadius: 8, padding: "6px 10px", background: "none" }}>Registrar</button>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Deudas (meses anteriores)</div>
+        <div style={{ background: COLORS.surface, borderRadius: 12, overflow: "hidden" }}>
+          {deudores.length === 0 && <div className="p-4" style={{ color: COLORS.textMuted, fontSize: 13 }}>No hay deudas registradas.</div>}
+          {deudores.map(({ s, info }, i) => (
+            <div key={s.id} className="flex items-center justify-between px-4 py-3" style={{ borderBottom: i < deudores.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
+              <div>
+                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{s.tipo === "Grupal" ? s.grupoNombre : `${s.nombre} ${s.apellido}`}</div>
+                <div style={{ fontSize: 11.5, color: COLORS.red }}>{info.meses} {info.meses === 1 ? "mes adeudado" : "meses adeudados"}</div>
+                <div style={{ fontSize: 11, color: COLORS.textMuted }}>{formatMesesLista(info.mesesLista)}</div>
+              </div>
+              <div style={{ fontWeight: 700, color: COLORS.red }}>{formatMoney(info.meses * s.cuota)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {pagoTarget && <RegistrarPagoModal mesesDisponibles={mesesDisponiblesParaPago(pagoTarget, socios, estadoCuota(pagoTarget, socios), { mes, anio })} cuotaSugerida={pagoTarget.cuota} onClose={() => setPagoTarget(null)} onConfirm={(mesesElegidos, montoPorMes, medio, fecha) => registrarPago(pagoTarget, mesesElegidos, montoPorMes, medio, fecha)} />}
+      {showReporte && <ReporteModal socios={socios} onClose={() => setShowReporte(false)} notify={notify} />}
+    </div>
+  );
+}
+
+/* ---------- ADMIN: Configuración ---------- */
+function AddAdminModal({ onClose, notify, onChanged }) {
+  const [uid, setUid] = useState("");
+  const [nombre, setNombre] = useState("");
+  const [guardando, setGuardando] = useState(false);
+
+  const agregar = async () => {
+    if (!uid || !nombre) { notify("Completá el UID y el nombre."); return; }
+    setGuardando(true);
+    const { error } = await supabase.from("perfiles").insert({ user_id: uid, rol: "admin", nombre });
+    setGuardando(false);
+    if (error) { notify("Error: " + error.message); return; }
+    notify("Administrador agregado.");
+    await onChanged();
+    onClose();
+  };
+
+  return (
+    <Modal title="Agregar administrador" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div style={{ fontSize: 12, color: COLORS.textMuted }}>
+          Primero creá el login en Supabase → Authentication → Users → "Add user", con el mail y contraseña de la nueva persona. Después pegá acá su UID (columna "UID" en esa misma lista).
+        </div>
+        <Field label="UID del usuario (de Supabase)"><input style={inputStyle} value={uid} onChange={(e) => setUid(e.target.value)} /></Field>
+        <Field label="Nombre completo"><input style={inputStyle} value={nombre} onChange={(e) => setNombre(e.target.value)} /></Field>
+        <button disabled={guardando} onClick={agregar} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none", opacity: guardando ? 0.6 : 1 }}>
+          {guardando ? "Agregando..." : "Agregar"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function AdminConfig({ cuotaConfig, adminUsers, notify, onChanged }) {
+  const [cuotas, setCuotas] = useState(cuotaConfig);
+  const [showAddAdmin, setShowAddAdmin] = useState(false);
+  const [pwd, setPwd] = useState({ nueva: "", confirmar: "" });
+
+  useEffect(() => { setCuotas(cuotaConfig); }, [cuotaConfig]);
+
+  const guardarCuotas = async () => {
+    await Promise.all(["Adherente", "Individual", "Grupal"].map((t) =>
+      supabase.from("cuota_config").update({ valor: Number(cuotas[t]), actualizado_en: new Date().toISOString() }).eq("tipo", t)
+    ));
+    notify("Valores de cuota actualizados. Aplican desde el próximo mes.");
+    await onChanged();
+  };
+
+  const cambiarPassword = async () => {
+    if (!pwd.nueva || pwd.nueva !== pwd.confirmar) { notify("Las contraseñas nuevas no coinciden."); return; }
+    const { error } = await supabase.auth.updateUser({ password: pwd.nueva });
+    if (error) { notify("Error: " + error.message); return; }
+    notify("Contraseña actualizada.");
+    setPwd({ nueva: "", confirmar: "" });
+  };
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <TopHeader title="Configuración" />
+      <div className="p-4 flex flex-col gap-4">
+        <Section title="Seguridad" icon={KeyRound}>
+          <Field label="Nueva contraseña"><input type="password" style={inputStyle} value={pwd.nueva} onChange={(e) => setPwd({ ...pwd, nueva: e.target.value })} /></Field>
+          <Field label="Confirmar nueva contraseña"><input type="password" style={inputStyle} value={pwd.confirmar} onChange={(e) => setPwd({ ...pwd, confirmar: e.target.value })} /></Field>
+          <button onClick={cambiarPassword} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "11px 0", borderRadius: 10, border: "none", marginTop: 4 }}>Actualizar contraseña</button>
+        </Section>
+
+        <Section title="Usuarios administradores" icon={ShieldCheck}>
+          {adminUsers.map((u) => (
+            <div key={u.id} className="flex items-center justify-between" style={{ padding: "7px 0" }}>
+              <span style={{ fontSize: 13.5 }}>{u.nombre}</span>
+            </div>
+          ))}
+          <button onClick={() => setShowAddAdmin(true)} style={{ color: COLORS.navy, fontSize: 13, fontWeight: 700, marginTop: 6, display: "flex", alignItems: "center", gap: 5, background: "none", border: "none" }}>
+            <UserPlus size={15} /> Agregar administrador
+          </button>
+        </Section>
+
+        <Section title="Valores de cuota" icon={DollarSign}>
+          {["Adherente", "Individual", "Grupal"].map((t) => (
+            <Field key={t} label={t}><input type="number" style={inputStyle} value={cuotas[t]} onChange={(e) => setCuotas({ ...cuotas, [t]: e.target.value })} /></Field>
+          ))}
+          <button onClick={guardarCuotas} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "11px 0", borderRadius: 10, border: "none", marginTop: 4 }}>Guardar cambios</button>
+        </Section>
+      </div>
+      {showAddAdmin && <AddAdminModal onClose={() => setShowAddAdmin(false)} notify={notify} onChanged={onChanged} />}
+    </div>
+  );
+}
+
+/* ---------- ADMIN: Notificaciones ---------- */
+function NotifAdminModal({ solicitudes, onClose, notify, onChanged }) {
+  const resolver = async (id) => {
+    await supabase.from("solicitudes_domicilio").update({ estado: "Revisado" }).eq("id", id);
+    notify("Solicitud marcada como revisada.");
+    await onChanged();
+  };
+  return (
+    <Modal title="Notificaciones" onClose={onClose}>
+      <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginBottom: 10 }}>Recordatorios automáticos: día 1 y día 10 de cada mes (se activan en el próximo paso).</div>
+      <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Solicitudes de socios</div>
+      {solicitudes.length === 0 && <div style={{ fontSize: 13, color: COLORS.textMuted }}>No hay solicitudes pendientes.</div>}
+      {solicitudes.map((s) => (
+        <div key={s.id} style={{ background: COLORS.bg, borderRadius: 10, padding: 12, marginBottom: 8 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600 }}>{s.nombreSocio} pidió cambiar su domicilio</div>
+          <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginTop: 2 }}>Nuevo domicilio: {s.nuevoDomicilio}</div>
+          <button onClick={() => resolver(s.id)} style={{ marginTop: 8, fontSize: 12, fontWeight: 700, color: COLORS.navy, background: "none", border: "none" }}>Marcar como revisado</button>
+        </div>
+      ))}
+    </Modal>
+  );
+}
+
+function ComponerNotifModal({ socios, onClose, notify, onChanged }) {
+  const [destinoTodos, setDestinoTodos] = useState(true);
+  const [seleccionados, setSeleccionados] = useState([]);
+  const [mensaje, setMensaje] = useState("");
+  const activos = socios.filter((s) => s.estado === "Activo");
+  const toggle = (id) => setSeleccionados(seleccionados.includes(id) ? seleccionados.filter((x) => x !== id) : [...seleccionados, id]);
+
+  const enviar = async () => {
+    if (!mensaje) return;
+    const { error } = await supabase.from("notificaciones").insert({ destinatarios: destinoTodos ? "todos" : seleccionados, mensaje });
+    if (error) { notify("Error: " + error.message); return; }
+    notify(`Notificación enviada a ${destinoTodos ? "todos los socios" : seleccionados.length + " socio(s)"}.`);
+    await onChanged();
+    onClose();
+  };
+
+  return (
+    <Modal title="Enviar notificación" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div className="flex gap-2">
+          <button onClick={() => setDestinoTodos(true)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: destinoTodos ? COLORS.navy : COLORS.bg, color: destinoTodos ? "#fff" : COLORS.text, border: "none" }}>Todos</button>
+          <button onClick={() => setDestinoTodos(false)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: !destinoTodos ? COLORS.navy : COLORS.bg, color: !destinoTodos ? "#fff" : COLORS.text, border: "none" }}>Elegir socios</button>
+        </div>
+        {!destinoTodos && (
+          <div style={{ maxHeight: 180, overflowY: "auto", border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 8 }}>
+            {activos.map((s) => (
+              <label key={s.id} className="flex items-center gap-2" style={{ fontSize: 13, padding: "5px 0" }}>
+                <input type="checkbox" checked={seleccionados.includes(s.id)} onChange={() => toggle(s.id)} /> {s.nombre} {s.apellido} (N° {s.id})
+              </label>
+            ))}
+          </div>
+        )}
+        <Field label="Mensaje"><textarea style={{ ...inputStyle, minHeight: 80 }} value={mensaje} onChange={(e) => setMensaje(e.target.value)} /></Field>
+        <button onClick={enviar} style={{ background: COLORS.green, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none" }}>Enviar notificación</button>
+      </div>
+    </Modal>
+  );
+}
+
+function AdminShell({ data, notify, onChanged, onExit }) {
+  const [tab, setTab] = useState("inicio");
+  const [showNotif, setShowNotif] = useState(false);
+  const [showCompose, setShowCompose] = useState(false);
+
+  return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", flexDirection: "column", fontFamily: BODY_FONT }}>
+      <div style={{ flex: 1 }}>
+        {tab === "inicio" && <AdminDashboard socios={data.socios} onOpenNotif={() => setShowNotif(true)} onCompose={() => setShowCompose(true)} onExit={onExit} />}
+        {tab === "socios" && <AdminSocios socios={data.socios} cuotaConfig={data.cuotaConfig} notify={notify} onChanged={onChanged} />}
+        {tab === "pagos" && <AdminPagos socios={data.socios} notify={notify} onChanged={onChanged} />}
+        {tab === "config" && <AdminConfig cuotaConfig={data.cuotaConfig} adminUsers={data.adminUsers} notify={notify} onChanged={onChanged} />}
+      </div>
+      <BottomNav active={tab} onChange={setTab} items={[
+        { key: "inicio", label: "Inicio", icon: Home },
+        { key: "socios", label: "Socios", icon: Users },
+        { key: "pagos", label: "Pagos", icon: CreditCard },
+        { key: "config", label: "Config", icon: Settings },
+      ]} />
+      {showNotif && <NotifAdminModal solicitudes={data.solicitudes} onClose={() => setShowNotif(false)} notify={notify} onChanged={onChanged} />}
+      {showCompose && <ComponerNotifModal socios={data.socios} onClose={() => setShowCompose(false)} notify={notify} onChanged={onChanged} />}
+    </div>
+  );
+}
+
+/* =========================================================
+   SOCIO (USUARIO)
+========================================================= */
+function UserInicio({ socio, socios, notificaciones, onExit }) {
+  const [showNotif, setShowNotif] = useState(false);
+  const [showFullscreen, setShowFullscreen] = useState(false);
+  const info = estadoCuota(socio, socios);
+  const misNotifs = notificaciones.filter((n) => n.destinatarios === "todos" || (Array.isArray(n.destinatarios) && n.destinatarios.includes(socio.id)));
+
+  return (
+    <div style={{ paddingBottom: 20 }}>
+      <TopHeader
+        title="Mi carnet"
+        subtitle={`${cap(MESES[CURRENT_MONTH - 1])} ${CURRENT_YEAR}`}
+        right={
+          <div className="flex items-center gap-3">
+            <button onClick={() => setShowNotif(true)} style={{ color: "#fff", background: "none", border: "none" }}><Bell size={21} /></button>
+            <button onClick={onExit} style={{ color: "#fff", background: "none", border: "none" }}><LogOut size={19} /></button>
+          </div>
+        }
+      />
+      <div className="p-4">
+        <button
+          onClick={() => setShowFullscreen(true)}
+          className="w-full"
+          style={{ background: `linear-gradient(135deg, ${COLORS.navy}, ${COLORS.navyDark})`, borderRadius: 18, padding: 20, color: "#fff", position: "relative", overflow: "hidden", border: "none", textAlign: "left", display: "block" }}
+        >
+          <div style={{ position: "absolute", top: -10, right: -10, opacity: 0.15 }}><Crest size={110} /></div>
+          <div className="flex items-center gap-3 mb-4">
+            <Crest size={34} />
+            <div>
+              <div style={{ fontFamily: DISPLAY_FONT, fontSize: 15, fontWeight: 700, letterSpacing: 0.5 }}>PUNTA ALTA RUGBY CLUB</div>
+              <div style={{ fontSize: 10.5, color: COLORS.green, fontWeight: 600 }}>CARNET DE SOCIO</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-4">
+            <div style={{ width: 62, height: 62, borderRadius: 999, overflow: "hidden", background: COLORS.green, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: DISPLAY_FONT, fontSize: 22, fontWeight: 700, border: "3px solid rgba(255,255,255,0.3)", flexShrink: 0 }}>
+              {socio.foto ? <img src={socio.foto} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <>{socio.nombre[0]}{socio.apellido[0]}</>}
+            </div>
+            <div>
+              <div style={{ fontFamily: DISPLAY_FONT, fontSize: 22, fontWeight: 700 }}>{socio.nombre} {socio.apellido}</div>
+              <div style={{ fontSize: 12.5, opacity: 0.85 }}>Socio N° {socio.id} · {socio.tipo}</div>
+            </div>
+          </div>
+          <div style={{ marginTop: 16 }}><EstadoPill info={info} /></div>
+          <div style={{ fontSize: 10.5, opacity: 0.6, marginTop: 14, textAlign: "center" }}>Tocá para agrandar</div>
+        </button>
+
+        <div style={{ background: COLORS.surface, borderRadius: 12, padding: 16, marginTop: 14 }}>
+          <InfoRow label="Cuota mensual" value={formatMoney(socio.cuota)} />
+          <InfoRow label="Próximo vencimiento" value={`Día 10 de ${cap(MESES[CURRENT_MONTH - 1])}`} last />
+        </div>
+
+        {info.estado === "Deudor" && <div style={{ background: COLORS.redLight, borderRadius: 12, padding: 14, marginTop: 12, fontSize: 13, color: COLORS.red }}>Debés {info.meses} {info.meses === 1 ? "mes" : "meses"} ({formatMesesLista(info.mesesLista)}). Podés regularizar tu situación desde Pagos.</div>}
+        {info.estado === "Pendiente" && <div style={{ background: COLORS.amberLight, borderRadius: 12, padding: 14, marginTop: 12, fontSize: 13, color: COLORS.amber }}>Todavía no registramos el pago de este mes. Recordá abonarlo antes de fin de mes.</div>}
+      </div>
+
+      {showFullscreen && (
+        <div
+          onClick={() => setShowFullscreen(false)}
+          style={{ position: "fixed", inset: 0, background: COLORS.navyDark, zIndex: 300 }}
+        >
+          <style>{`
+            .carnet-mensaje-girar { display: flex; }
+            .carnet-completo { display: none; }
+            @media (orientation: landscape) {
+              .carnet-mensaje-girar { display: none; }
+              .carnet-completo { display: flex; }
+            }
+          `}</style>
+
+          <div className="carnet-mensaje-girar" style={{ height: "100%", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#fff", padding: 30, textAlign: "center", gap: 14 }}>
+            <div style={{ fontSize: 44 }}>🔄</div>
+            <div style={{ fontFamily: DISPLAY_FONT, fontSize: 20, fontWeight: 700 }}>Girá tu celular</div>
+            <div style={{ fontSize: 13.5, opacity: 0.8, maxWidth: 260 }}>Ponelo en horizontal para ver tu carnet completo</div>
+            <button onClick={(e) => { e.stopPropagation(); setShowFullscreen(false); }} style={{ marginTop: 16, color: "#fff", background: "rgba(255,255,255,0.15)", border: "none", padding: "10px 22px", borderRadius: 10, fontSize: 13 }}>Cerrar</button>
+          </div>
+
+          <div
+            className="carnet-completo"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              height: "100%", flexDirection: "row", alignItems: "center", justifyContent: "space-evenly",
+              padding: "5% 6%", background: `linear-gradient(135deg, ${COLORS.navy}, ${COLORS.navyDark})`,
+              color: "#fff", position: "relative", overflow: "hidden",
+            }}
+          >
+            <div style={{ position: "absolute", top: -30, right: -30, opacity: 0.15 }}><Crest size={160} /></div>
+            <button onClick={() => setShowFullscreen(false)} style={{ position: "absolute", top: 14, right: 14, color: "#fff", background: "none", border: "none" }}><X size={26} /></button>
+
+            <div className="flex flex-col items-center gap-2">
+              <Crest size={56} />
+              <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700, letterSpacing: 0.5, textAlign: "center", maxWidth: 140 }}>PUNTA ALTA RUGBY CLUB</div>
+              <div style={{ fontSize: 11.5, color: COLORS.green, fontWeight: 700 }}>CARNET DE SOCIO</div>
+            </div>
+
+            <div className="flex flex-col items-center gap-2">
+              <div style={{ width: 110, height: 110, borderRadius: 999, overflow: "hidden", background: COLORS.green, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: DISPLAY_FONT, fontSize: 36, fontWeight: 700, border: "4px solid rgba(255,255,255,0.3)", flexShrink: 0 }}>
+                {socio.foto ? <img src={socio.foto} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : <>{socio.nombre[0]}{socio.apellido[0]}</>}
+              </div>
+              <div style={{ fontFamily: DISPLAY_FONT, fontSize: 26, fontWeight: 700, textAlign: "center" }}>{socio.nombre} {socio.apellido}</div>
+              <div style={{ fontSize: 14, opacity: 0.85 }}>Socio N° {socio.id} · {socio.tipo}</div>
+            </div>
+
+            <div style={{ transform: "scale(1.3)" }}><EstadoPill info={info} /></div>
+          </div>
+        </div>
+      )}
+
+      {showNotif && (
+        <Modal title="Notificaciones" onClose={() => setShowNotif(false)}>
+          {misNotifs.length === 0 && <div style={{ fontSize: 13, color: COLORS.textMuted }}>No tenés notificaciones nuevas.</div>}
+          {[...misNotifs].reverse().map((n) => (
+            <div key={n.id} style={{ background: COLORS.bg, borderRadius: 10, padding: 12, marginBottom: 8, fontSize: 13.5 }}>
+              {n.mensaje}
+              <div style={{ fontSize: 11, color: COLORS.textMuted, marginTop: 4 }}>{formatFechaISO(n.fecha)}</div>
+            </div>
+          ))}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+function UserHistorial({ socio, socios }) {
+  const [sub, setSub] = useState("pagos");
+  const pagos = [...pagosEfectivos(socio, socios)].sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+  const cambios = [...socio.historialCambios].reverse();
+
+  return (
+    <div style={{ paddingBottom: 20 }}>
+      <TopHeader title="Historial" />
+      <div className="px-4 pt-4 flex gap-2">
+        <button onClick={() => setSub("pagos")} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: sub === "pagos" ? COLORS.navy : COLORS.surface, color: sub === "pagos" ? "#fff" : COLORS.text, border: "none" }}>Pagos</button>
+        <button onClick={() => setSub("cambios")} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: sub === "cambios" ? COLORS.navy : COLORS.surface, color: sub === "cambios" ? "#fff" : COLORS.text, border: "none" }}>Modificaciones</button>
+      </div>
+      <div className="px-4 mt-3">
+        <div style={{ background: COLORS.surface, borderRadius: 12, overflow: "hidden" }}>
+          {sub === "pagos" && (pagos.length === 0 ? <div className="p-4" style={{ color: COLORS.textMuted, fontSize: 13 }}>Sin pagos registrados.</div> : pagos.map((p, i) => (
+            <div key={i} className="flex items-center justify-between px-4 py-3" style={{ borderBottom: i < pagos.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
+              <div>
+                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{cap(MESES[p.mes - 1])} {p.anio}</div>
+                <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>{p.medio} · {formatFechaISO(p.fecha)}</div>
+              </div>
+              <div style={{ fontWeight: 700, color: COLORS.navy }}>{formatMoney(p.monto)}</div>
+            </div>
+          )))}
+          {sub === "cambios" && (cambios.length === 0 ? <div className="p-4" style={{ color: COLORS.textMuted, fontSize: 13 }}>Sin modificaciones registradas.</div> : cambios.map((c, i) => (
+            <div key={i} className="px-4 py-3" style={{ borderBottom: i < cambios.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>{c.campo}</div>
+              <div style={{ fontSize: 12, color: COLORS.textMuted }}>{c.anterior} → {c.nuevo} · {formatFechaISO(c.fecha)}</div>
+            </div>
+          )))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UserPagos({ socio, socios, notify, onChanged }) {
+  const info = estadoCuota(socio, socios);
+  const [cantidad, setCantidad] = useState(Math.max(1, info.meses || 1));
+  const [redirigiendo, setRedirigiendo] = useState(false);
+
+  const meses = proximosMesesAPagar(socio, socios, cantidad);
+  const total = meses.length * socio.cuota;
+
+  const pagarConMP = async () => {
+    if (meses.length === 0) return;
+    setRedirigiendo(true);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const returnUrl = window.location.origin + window.location.pathname;
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/crear-preferencia-pago`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${sessionData.session.access_token}`, "apikey": SUPABASE_ANON_KEY },
+        body: JSON.stringify({ meses, returnUrl }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error || !data.checkoutUrl) { setRedirigiendo(false); notify("Error: " + (data.error || "no se pudo iniciar el pago")); return; }
+      window.location.href = data.checkoutUrl;
+    } catch (e) {
+      setRedirigiendo(false);
+      notify("Error al conectar con Mercado Pago.");
+    }
+  };
+
+  return (
+    <div style={{ paddingBottom: 20 }}>
+      <TopHeader title="Pagos" />
+      <div className="p-4">
+        <div style={{ background: COLORS.surface, borderRadius: 14, padding: 18 }}>
+          <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Cuota de {cap(MESES[CURRENT_MONTH - 1])}</div>
+          <div style={{ fontFamily: DISPLAY_FONT, fontSize: 32, fontWeight: 700, color: COLORS.text, marginTop: 2 }}>{formatMoney(socio.cuota)}</div>
+          <div style={{ marginTop: 8 }}><EstadoPill info={info} /></div>
+
+          {info.estado === "Eximido" ? (
+            <div style={{ background: COLORS.exentoLight, color: COLORS.exento, borderRadius: 10, padding: "12px 14px", marginTop: 16, fontSize: 13 }}>
+              Estás eximido del pago de la cuota. ¡Gracias por tu colaboración con el club!
+            </div>
+          ) : (
+            <>
+              {info.estado === "Deudor" && (
+                <div style={{ fontSize: 12.5, color: COLORS.red, marginTop: 12 }}>
+                  Debés {info.meses} {info.meses === 1 ? "mes" : "meses"} ({formatMesesLista(info.mesesLista)}).
+                </div>
+              )}
+
+              <div className="flex items-center justify-between" style={{ marginTop: 16, background: COLORS.bg, borderRadius: 10, padding: "10px 14px" }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>Cuotas a pagar</span>
+                <div className="flex items-center gap-3">
+                  <button onClick={() => setCantidad(Math.max(1, cantidad - 1))} style={{ width: 30, height: 30, borderRadius: 999, border: `1px solid ${COLORS.border}`, background: COLORS.surface, fontSize: 18, fontWeight: 700, color: COLORS.navy }}>−</button>
+                  <span style={{ fontFamily: DISPLAY_FONT, fontSize: 18, fontWeight: 700, minWidth: 20, textAlign: "center" }}>{cantidad}</span>
+                  <button onClick={() => setCantidad(Math.min(24, cantidad + 1))} style={{ width: 30, height: 30, borderRadius: 999, border: `1px solid ${COLORS.border}`, background: COLORS.surface, fontSize: 18, fontWeight: 700, color: COLORS.navy }}>+</button>
+                </div>
+              </div>
+              <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 6 }}>{formatMesesLista(meses)}</div>
+              <div style={{ fontFamily: DISPLAY_FONT, fontSize: 20, fontWeight: 700, color: COLORS.navy, marginTop: 4 }}>Total: {formatMoney(total)}</div>
+
+              <button disabled={redirigiendo} onClick={pagarConMP} className="w-full flex items-center justify-center gap-2" style={{ background: "#009EE3", color: "#fff", fontWeight: 700, padding: "13px 0", borderRadius: 10, marginTop: 14, fontSize: 14.5, border: "none", opacity: redirigiendo ? 0.7 : 1 }}>
+                <Wallet size={18} /> {redirigiendo ? "Redirigiendo..." : "Pagar con Mercado Pago"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UserConfig({ socio, notify, onChanged }) {
+  const [pwd, setPwd] = useState({ nueva: "", confirmar: "" });
+  const [nuevoDomicilio, setNuevoDomicilio] = useState("");
+
+  const cambiarPassword = async () => {
+    if (!pwd.nueva || pwd.nueva !== pwd.confirmar) { notify("Las contraseñas nuevas no coinciden."); return; }
+    const { error } = await supabase.auth.updateUser({ password: pwd.nueva });
+    if (error) { notify("Error: " + error.message); return; }
+    notify("Contraseña actualizada.");
+    setPwd({ nueva: "", confirmar: "" });
+  };
+  const enviarSolicitud = async () => {
+    if (!nuevoDomicilio) return;
+    const { error } = await supabase.from("solicitudes_domicilio").insert({ socio_id: socio.id, nuevo_domicilio: nuevoDomicilio });
+    if (error) { notify("Error: " + error.message); return; }
+    setNuevoDomicilio("");
+    notify("Solicitud enviada. El administrador la va a revisar.");
+    await onChanged();
+  };
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <TopHeader title="Configuración" />
+      <div className="p-4 flex flex-col gap-4">
+        <Section title="Seguridad" icon={KeyRound}>
+          <Field label="Nueva contraseña"><input type="password" style={inputStyle} value={pwd.nueva} onChange={(e) => setPwd({ ...pwd, nueva: e.target.value })} /></Field>
+          <Field label="Confirmar nueva contraseña"><input type="password" style={inputStyle} value={pwd.confirmar} onChange={(e) => setPwd({ ...pwd, confirmar: e.target.value })} /></Field>
+          <button onClick={cambiarPassword} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "11px 0", borderRadius: 10, border: "none" }}>Actualizar contraseña</button>
+        </Section>
+        <Section title="Solicitar cambio de domicilio" icon={MapPin}>
+          <div style={{ fontSize: 12, color: COLORS.textMuted }}>Domicilio actual: {socio.domicilio || "-"}</div>
+          <Field label="Nuevo domicilio"><input style={inputStyle} value={nuevoDomicilio} onChange={(e) => setNuevoDomicilio(e.target.value)} /></Field>
+          <button onClick={enviarSolicitud} style={{ background: COLORS.green, color: "#fff", fontWeight: 700, padding: "11px 0", borderRadius: 10, border: "none" }}>Enviar solicitud</button>
+        </Section>
+      </div>
+    </div>
+  );
+}
+
+function UserShell({ socio, data, notify, onChanged, onExit }) {
+  const [tab, setTab] = useState("inicio");
+  return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", flexDirection: "column", fontFamily: BODY_FONT }}>
+      <div style={{ flex: 1 }}>
+        {tab === "inicio" && <UserInicio socio={socio} socios={data.socios} notificaciones={data.notificaciones} onExit={onExit} />}
+        {tab === "historial" && <UserHistorial socio={socio} socios={data.socios} />}
+        {tab === "pagos" && <UserPagos socio={socio} socios={data.socios} notify={notify} onChanged={onChanged} />}
+        {tab === "config" && <UserConfig socio={socio} notify={notify} onChanged={onChanged} />}
+      </div>
+      <BottomNav active={tab} onChange={setTab} items={[
+        { key: "inicio", label: "Inicio", icon: Home },
+        { key: "historial", label: "Historial", icon: Clock },
+        { key: "pagos", label: "Pagos", icon: CreditCard },
+        { key: "config", label: "Config", icon: Settings },
+      ]} />
+    </div>
+  );
+}
+
+function PantallaCarga() {
+  return (
+    <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: BODY_FONT, color: COLORS.textMuted }}>
+      Cargando...
+    </div>
+  );
+}
+
+/* =========================================================
+   APP RAÍZ
+========================================================= */
+function App() {
+  const [session, setSession] = useState(null);
+  const [perfil, setPerfil] = useState(null);
+  const [cargandoSesion, setCargandoSesion] = useState(true);
+  const [datosListos, setDatosListos] = useState(false);
+  const [socios, setSocios] = useState([]);
+  const [cuotaConfig, setCuotaConfig] = useState({ Adherente: 0, Individual: 0, Grupal: 0 });
+  const [adminUsers, setAdminUsers] = useState([]);
+  const [solicitudes, setSolicitudes] = useState([]);
+  const [notificaciones, setNotificaciones] = useState([]);
+  const [toast, setToast] = useState("");
+
+  const notify = (msg) => setToast(msg);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(""), 2600);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("collection_status") || params.get("status");
+    if (status) {
+      if (status === "approved") notify("¡Pago aprobado! Puede tardar unos segundos en reflejarse acá.");
+      else if (status === "pending" || status === "in_process") notify("Tu pago quedó pendiente de confirmación.");
+      else if (status === "rejected") notify("El pago no se pudo procesar.");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+  }, []);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setCargandoSesion(false); });
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  const cargarPerfil = async (sess) => {
+    const s = sess || session;
+    if (!s) { setPerfil(null); return; }
+    const { data } = await supabase.from("perfiles").select("*").eq("user_id", s.user.id).maybeSingle();
+    setPerfil(data || null);
+    if (data) await recargarDatos();
+  };
+
+  useEffect(() => { if (session) cargarPerfil(session); else { setPerfil(null); setDatosListos(false); } }, [session]);
+
+  const recargarDatos = async () => {
+    const [sociosRes, pagosRes, tipoRes, cambiosRes, cuotaRes, adminsRes, solicRes, notifRes] = await Promise.all([
+      supabase.from("socios").select("*").order("id"),
+      supabase.from("pagos").select("*"),
+      supabase.from("historial_tipo").select("*"),
+      supabase.from("historial_cambios").select("*"),
+      supabase.from("cuota_config").select("*"),
+      supabase.from("perfiles").select("*").eq("rol", "admin"),
+      supabase.from("solicitudes_domicilio").select("*").eq("estado", "Pendiente"),
+      supabase.from("notificaciones").select("*").order("fecha", { ascending: false }),
+    ]);
+
+    const sociosMapeados = (sociosRes.data || []).map(mapSocioRow);
+    const porId = Object.fromEntries(sociosMapeados.map((s) => [s.id, s]));
+    (tipoRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].historialTipo.push({ tipo: r.tipo, desde: r.desde }); });
+    (cambiosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].historialCambios.push({ fecha: r.fecha, campo: r.campo, anterior: r.anterior, nuevo: r.nuevo }); });
+    (pagosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].pagos.push({ mes: r.mes, anio: r.anio, monto: Number(r.monto), medio: r.medio, fecha: r.fecha }); });
+    Object.values(porId).forEach((s) => { s.historialTipo.sort((a, b) => (a.desde < b.desde ? -1 : 1)); s.historialCambios.sort((a, b) => (a.fecha < b.fecha ? -1 : 1)); });
+
+    setSocios(sociosMapeados);
+
+    const cc = { Adherente: 0, Individual: 0, Grupal: 0 };
+    (cuotaRes.data || []).forEach((r) => { cc[r.tipo] = Number(r.valor); });
+    setCuotaConfig(cc);
+
+    setAdminUsers((adminsRes.data || []).map((a) => ({ id: a.user_id, nombre: a.nombre || "Administrador" })));
+
+    setSolicitudes((solicRes.data || []).map((s) => {
+      const soc = sociosMapeados.find((x) => x.id === s.socio_id);
+      return { id: s.id, nombreSocio: soc ? `${soc.nombre} ${soc.apellido}` : `Socio N° ${s.socio_id}`, nuevoDomicilio: s.nuevo_domicilio };
+    }));
+
+    setNotificaciones((notifRes.data || []).map((n) => ({ id: n.id, destinatarios: n.destinatarios, mensaje: n.mensaje, fecha: n.fecha })));
+    setDatosListos(true);
+  };
+
+  const salir = async () => { await supabase.auth.signOut(); setPerfil(null); setDatosListos(false); };
+
+  if (cargandoSesion) return <PantallaCarga />;
+  if (!session) return (<div style={{ fontFamily: BODY_FONT }}><ToastBar text={toast} /><LoginScreen notify={notify} /></div>);
+  if (!perfil) return (<div style={{ fontFamily: BODY_FONT }}><ToastBar text={toast} /><VincularScreen onVinculado={() => cargarPerfil(session)} onSalir={salir} notify={notify} /></div>);
+  if (!datosListos) return <PantallaCarga />;
+
+  const data = { socios, cuotaConfig, adminUsers, solicitudes, notificaciones };
+
+  return (
+    <div style={{ fontFamily: BODY_FONT }}>
+      <ToastBar text={toast} />
+      {perfil.rol === "admin" ? (
+        <AdminShell data={data} notify={notify} onChanged={recargarDatos} onExit={salir} />
+      ) : perfil.rol === "socio" ? (
+        <UserShell socio={socios.find((s) => s.id === perfil.socio_id)} data={data} notify={notify} onChanged={recargarDatos} onExit={salir} />
+      ) : (
+        <SinAcceso onExit={salir} />
+      )}
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+
+</script>
+</body>
+</html>

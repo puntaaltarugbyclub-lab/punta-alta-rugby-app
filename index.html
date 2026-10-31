@@ -9,9 +9,16 @@
 <link rel="apple-touch-icon" href="icon-192.png" />
 <meta name="theme-color" content="#123A63" />
 <script src="https://cdn.tailwindcss.com"></script>
-<!-- Las dependencias se cargan con URLs completas dentro del módulo Babel.
-     Esto evita depender de import maps, que pueden provocar una pantalla en blanco
-     en algunos entornos de GitHub Pages/navegadores móviles. -->
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18",
+    "react-dom/client": "https://esm.sh/react-dom@18/client?external=react",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2",
+    "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react"
+  }
+}
+</script>
 <style>
   html, body { margin: 0; padding: 0; background: #F5F3EE; }
   * { box-sizing: border-box; }
@@ -21,25 +28,17 @@
 </head>
 <body>
 <div id="root"></div>
-<script>
-  window.addEventListener("error", function (event) {
-    console.error("Error al cargar la aplicación:", event.error || event.message);
-  });
-  window.addEventListener("unhandledrejection", function (event) {
-    console.error("Error no controlado:", event.reason);
-  });
-</script>
 <script src="https://unpkg.com/@babel/standalone@7/babel.min.js"></script>
 <script type="text/babel" data-type="module" data-presets="react">
-import React, { useState, useEffect } from "https://esm.sh/react@18.3.1";
-import ReactDOM from "https://esm.sh/react-dom@18.3.1/client?deps=react@18.3.1";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.57.2";
+import React, { useState, useEffect } from "react";
+import ReactDOM from "react-dom/client";
+import { createClient } from "@supabase/supabase-js";
 import {
   Home, Users, CreditCard, Settings, Search, Plus, X, Check,
   ChevronRight, ChevronLeft, ArrowLeft, AlertTriangle, Bell,
   Send, LogOut, Edit2, Clock, FileText, ShieldCheck,
   UserPlus, CheckCircle2, KeyRound, DollarSign, Camera, Wallet, MapPin,
-} from "https://esm.sh/lucide-react@0.383.0?deps=react@18.3.1";
+} from "lucide-react";
 
 /* =========================================================
    PUNTA ALTA RUGBY CLUB — App real (conectada a Supabase)
@@ -109,6 +108,18 @@ function mesesDisponiblesParaPago(socio, socios, info, mesExtra) {
     if (!yaPagado(c) && !lista.some((m) => m.mes === c.mes && m.anio === c.anio)) lista.push(c);
   });
   return lista.sort((a, b) => (a.anio * 12 + a.mes) - (b.anio * 12 + b.mes));
+}
+// Meses futuros (posteriores al mes actual) que todavía no están pagados,
+// para poder adelantar cuotas desde el registro de pago del administrador.
+function mesesParaAdelantar(socio, socios, cantidad) {
+  const pagos = pagosEfectivos(socio, socios);
+  const yaPagado = (m) => pagos.some((p) => p.mes === m.mes && p.anio === m.anio);
+  const lista = [];
+  for (let i = 1; i <= (cantidad || 12); i++) {
+    const m = shiftMonth(CURRENT_MONTH, CURRENT_YEAR, i);
+    if (!yaPagado(m)) lista.push(m);
+  }
+  return lista;
 }
 function listaDeGrupos(socios) {
   const titulares = socios.filter((s) => s.tipo === "Grupal" && s.esTitular && s.estado === "Activo");
@@ -268,8 +279,11 @@ function Section({ title, icon: Icon, children }) {
     </div>
   );
 }
-function RegistrarPagoModal({ mesesDisponibles, cuotaSugerida, onClose, onConfirm }) {
-  const [seleccionados, setSeleccionados] = useState(mesesDisponibles.length ? [`${mesesDisponibles[0].anio}-${mesesDisponibles[0].mes}`] : []);
+function RegistrarPagoModal({ mesesDisponibles, mesesAdelanto = [], cuotaSugerida, onClose, onConfirm }) {
+  // Si un mes ya figura entre los pendientes, no se repite en la lista de adelanto.
+  const adelanto = mesesAdelanto.filter((a) => !mesesDisponibles.some((m) => m.mes === a.mes && m.anio === a.anio));
+  const primero = mesesDisponibles[0] || adelanto[0];
+  const [seleccionados, setSeleccionados] = useState(primero ? [`${primero.anio}-${primero.mes}`] : []);
   const [montoPorMes, setMontoPorMes] = useState(cuotaSugerida);
   const [medio, setMedio] = useState("Efectivo");
   const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
@@ -280,9 +294,21 @@ function RegistrarPagoModal({ mesesDisponibles, cuotaSugerida, onClose, onConfir
   const confirmar = async () => {
     if (seleccionados.length === 0) return;
     setGuardando(true);
-    const meses = seleccionados.map((k) => { const [anio, mes] = k.split("-").map(Number); return { mes, anio }; });
+    const meses = seleccionados
+      .map((k) => { const [anio, mes] = k.split("-").map(Number); return { mes, anio }; })
+      .sort((a, b) => (a.anio * 12 + a.mes) - (b.anio * 12 + b.mes));
     await onConfirm(meses, montoPorMes, medio, fecha);
     setGuardando(false);
+  };
+
+  const renderMes = (m) => {
+    const key = `${m.anio}-${m.mes}`;
+    return (
+      <label key={key} className="flex items-center gap-2" style={{ fontSize: 13.5, padding: "5px 2px" }}>
+        <input type="checkbox" checked={seleccionados.includes(key)} onChange={() => toggle(key)} />
+        {cap(MESES[m.mes - 1])} {m.anio}
+      </label>
+    );
   };
 
   return (
@@ -291,15 +317,14 @@ function RegistrarPagoModal({ mesesDisponibles, cuotaSugerida, onClose, onConfir
         {mesesDisponibles.length > 0 && (
           <Field label="¿Qué mes o meses cubre este pago?">
             <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 8 }}>
-              {mesesDisponibles.map((m) => {
-                const key = `${m.anio}-${m.mes}`;
-                return (
-                  <label key={key} className="flex items-center gap-2" style={{ fontSize: 13.5, padding: "5px 2px" }}>
-                    <input type="checkbox" checked={seleccionados.includes(key)} onChange={() => toggle(key)} />
-                    {cap(MESES[m.mes - 1])} {m.anio}
-                  </label>
-                );
-              })}
+              {mesesDisponibles.map(renderMes)}
+            </div>
+          </Field>
+        )}
+        {adelanto.length > 0 && (
+          <Field label={mesesDisponibles.length > 0 ? "Adelantar cuotas (meses siguientes)" : "Está al día. ¿Querés adelantar cuotas?"}>
+            <div style={{ border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 8, maxHeight: 170, overflowY: "auto" }}>
+              {adelanto.map(renderMes)}
             </div>
           </Field>
         )}
@@ -864,7 +889,7 @@ function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
           </div>
         </Modal>
       )}
-      {showPago && <RegistrarPagoModal mesesDisponibles={mesesDisponiblesParaPago(socio, socios, info)} cuotaSugerida={socio.cuota} onClose={() => setShowPago(false)} onConfirm={registrarPago} />}
+      {showPago && <RegistrarPagoModal mesesDisponibles={mesesDisponiblesParaPago(socio, socios, info)} mesesAdelanto={mesesParaAdelantar(socio, socios)} cuotaSugerida={socio.cuota} onClose={() => setShowPago(false)} onConfirm={registrarPago} />}
     </div>
   );
 }
@@ -1127,7 +1152,7 @@ function AdminPagos({ socios, notify, onChanged }) {
         </div>
       </div>
 
-      {pagoTarget && <RegistrarPagoModal mesesDisponibles={mesesDisponiblesParaPago(pagoTarget, socios, estadoCuota(pagoTarget, socios), { mes, anio })} cuotaSugerida={pagoTarget.cuota} onClose={() => setPagoTarget(null)} onConfirm={(mesesElegidos, montoPorMes, medio, fecha) => registrarPago(pagoTarget, mesesElegidos, montoPorMes, medio, fecha)} />}
+      {pagoTarget && <RegistrarPagoModal mesesDisponibles={mesesDisponiblesParaPago(pagoTarget, socios, estadoCuota(pagoTarget, socios), { mes, anio })} mesesAdelanto={mesesParaAdelantar(pagoTarget, socios)} cuotaSugerida={pagoTarget.cuota} onClose={() => setPagoTarget(null)} onConfirm={(mesesElegidos, montoPorMes, medio, fecha) => registrarPago(pagoTarget, mesesElegidos, montoPorMes, medio, fecha)} />}
       {showReporte && <ReporteModal socios={socios} onClose={() => setShowReporte(false)} notify={notify} />}
     </div>
   );
@@ -1623,100 +1648,4 @@ function App() {
 
   const notify = (msg) => setToast(msg);
   useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(""), 2600);
-    return () => clearTimeout(t);
-  }, [toast]);
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const status = params.get("collection_status") || params.get("status");
-    if (status) {
-      if (status === "approved") notify("¡Pago aprobado! Puede tardar unos segundos en reflejarse acá.");
-      else if (status === "pending" || status === "in_process") notify("Tu pago quedó pendiente de confirmación.");
-      else if (status === "rejected") notify("El pago no se pudo procesar.");
-      window.history.replaceState({}, "", window.location.pathname);
-    }
-  }, []);
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => { setSession(data.session); setCargandoSesion(false); });
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
-    return () => sub.subscription.unsubscribe();
-  }, []);
-
-  const cargarPerfil = async (sess) => {
-    const s = sess || session;
-    if (!s) { setPerfil(null); return; }
-    const { data } = await supabase.from("perfiles").select("*").eq("user_id", s.user.id).maybeSingle();
-    setPerfil(data || null);
-    if (data) await recargarDatos();
-  };
-
-  useEffect(() => { if (session) cargarPerfil(session); else { setPerfil(null); setDatosListos(false); } }, [session]);
-
-  const recargarDatos = async () => {
-    const [sociosRes, pagosRes, tipoRes, cambiosRes, cuotaRes, adminsRes, solicRes, notifRes] = await Promise.all([
-      supabase.from("socios").select("*").order("id"),
-      supabase.from("pagos").select("*"),
-      supabase.from("historial_tipo").select("*"),
-      supabase.from("historial_cambios").select("*"),
-      supabase.from("cuota_config").select("*"),
-      supabase.from("perfiles").select("*").eq("rol", "admin"),
-      supabase.from("solicitudes_domicilio").select("*").eq("estado", "Pendiente"),
-      supabase.from("notificaciones").select("*").order("fecha", { ascending: false }),
-    ]);
-
-    const sociosMapeados = (sociosRes.data || []).map(mapSocioRow);
-    const porId = Object.fromEntries(sociosMapeados.map((s) => [s.id, s]));
-    (tipoRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].historialTipo.push({ tipo: r.tipo, desde: r.desde }); });
-    (cambiosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].historialCambios.push({ fecha: r.fecha, campo: r.campo, anterior: r.anterior, nuevo: r.nuevo }); });
-    (pagosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].pagos.push({ mes: r.mes, anio: r.anio, monto: Number(r.monto), medio: r.medio, fecha: r.fecha }); });
-    Object.values(porId).forEach((s) => { s.historialTipo.sort((a, b) => (a.desde < b.desde ? -1 : 1)); s.historialCambios.sort((a, b) => (a.fecha < b.fecha ? -1 : 1)); });
-
-    setSocios(sociosMapeados);
-
-    const cc = { Adherente: 0, Individual: 0, Grupal: 0 };
-    (cuotaRes.data || []).forEach((r) => { cc[r.tipo] = Number(r.valor); });
-    setCuotaConfig(cc);
-
-    setAdminUsers((adminsRes.data || []).map((a) => ({ id: a.user_id, nombre: a.nombre || "Administrador" })));
-
-    setSolicitudes((solicRes.data || []).map((s) => {
-      const soc = sociosMapeados.find((x) => x.id === s.socio_id);
-      return { id: s.id, nombreSocio: soc ? `${soc.nombre} ${soc.apellido}` : `Socio N° ${s.socio_id}`, nuevoDomicilio: s.nuevo_domicilio };
-    }));
-
-    setNotificaciones((notifRes.data || []).map((n) => ({ id: n.id, destinatarios: n.destinatarios, mensaje: n.mensaje, fecha: n.fecha })));
-    setDatosListos(true);
-  };
-
-  const salir = async () => { await supabase.auth.signOut(); setPerfil(null); setDatosListos(false); };
-
-  if (cargandoSesion) return <PantallaCarga />;
-  if (!session) return (<div style={{ fontFamily: BODY_FONT }}><ToastBar text={toast} /><LoginScreen notify={notify} /></div>);
-  if (!perfil) return (<div style={{ fontFamily: BODY_FONT }}><ToastBar text={toast} /><VincularScreen onVinculado={() => cargarPerfil(session)} onSalir={salir} notify={notify} /></div>);
-  if (!datosListos) return <PantallaCarga />;
-
-  const data = { socios, cuotaConfig, adminUsers, solicitudes, notificaciones };
-
-  return (
-    <div style={{ fontFamily: BODY_FONT }}>
-      <ToastBar text={toast} />
-      {perfil.rol === "admin" ? (
-        <AdminShell data={data} notify={notify} onChanged={recargarDatos} onExit={salir} />
-      ) : perfil.rol === "socio" ? (
-        <UserShell socio={socios.find((s) => s.id === perfil.socio_id)} data={data} notify={notify} onChanged={recargarDatos} onExit={salir} />
-      ) : (
-        <SinAcceso onExit={salir} />
-      )}
-    </div>
-  );
-}
-
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(<App />);
-
-</script>
-</body>
-</html>
+    if

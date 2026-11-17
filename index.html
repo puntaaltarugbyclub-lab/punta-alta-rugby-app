@@ -66,7 +66,7 @@ import {
   Home, Users, CreditCard, Settings, Search, Plus, X, Check,
   ChevronRight, ChevronLeft, ArrowLeft, AlertTriangle, Bell,
   Send, LogOut, Edit2, Clock, FileText, ShieldCheck,
-  UserPlus, CheckCircle2, KeyRound, DollarSign, Camera, Wallet, MapPin,
+  UserPlus, CheckCircle2, KeyRound, DollarSign, Camera, Wallet, MapPin, Trash2,
 } from "lucide-react";
 
 /* =========================================================
@@ -93,6 +93,12 @@ const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const pad = (n) => String(n).padStart(2, "0");
 const formatMoney = (n) => "$" + Number(n || 0).toLocaleString("es-AR");
 const formatFechaISO = (iso) => { if (!iso) return "-"; const [y, m, d] = iso.slice(0, 10).split("-"); return `${d}/${m}/${y}`; };
+const formatFechaHora = (iso) => {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (isNaN(d)) return formatFechaISO(iso);
+  return d.toLocaleDateString("es-AR") + " " + d.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false });
+};
 const inputStyle = { border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "9px 10px", fontSize: 14, width: "100%", fontFamily: BODY_FONT };
 
 const now = new Date();
@@ -370,6 +376,66 @@ function RegistrarPagoModal({ mesesDisponibles, mesesAdelanto = [], cuotaSugerid
         </button>
       </div>
     </Modal>
+  );
+}
+
+/* ---------- ADMIN: eliminar un pago (queda registrado solo para administradores) ---------- */
+function EliminarPagoModal({ pago, nombre, notify, onClose, onDone }) {
+  const [motivo, setMotivo] = useState("");
+  const [eliminando, setEliminando] = useState(false);
+
+  const confirmar = async () => {
+    if (!motivo.trim()) { notify("Escribí el motivo para dejar el registro."); return; }
+    setEliminando(true);
+    const { data, error } = await supabase.rpc("eliminar_pago", { p_pago_id: pago.id, p_motivo: motivo.trim() });
+    setEliminando(false);
+    if (error) { notify("Error: " + error.message); return; }
+    if (data && data.ok === false) { notify(data.error || "No se pudo eliminar el pago."); return; }
+    notify("Pago eliminado. Quedó registrado.");
+    await onDone();
+    onClose();
+  };
+
+  return (
+    <Modal title="Eliminar pago" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div style={{ background: COLORS.bg, borderRadius: 10, padding: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{nombre}</div>
+          <div style={{ fontSize: 13, marginTop: 2 }}>{cap(MESES[pago.mes - 1])} {pago.anio} · {formatMoney(pago.monto)}</div>
+          <div style={{ fontSize: 12, color: COLORS.textMuted }}>{pago.medio} · {formatFechaISO(pago.fecha)}</div>
+        </div>
+        <div style={{ fontSize: 13, color: COLORS.text, lineHeight: 1.4 }}>
+          El mes va a quedar como no pagado y el estado del socio se recalcula. Este movimiento queda guardado en un registro que ven solo los administradores.
+        </div>
+        {pago.medio === "Mercado Pago" && (
+          <div style={{ background: COLORS.amberLight, color: COLORS.amber, borderRadius: 10, padding: 12, fontSize: 12.5, lineHeight: 1.4 }}>
+            <b>Ojo:</b> este pago se cobró por Mercado Pago. Eliminarlo acá <b>no devuelve la plata</b>: si hay que reintegrarla, hacelo desde tu cuenta de Mercado Pago.
+          </div>
+        )}
+        <Field label="Motivo (obligatorio)">
+          <textarea value={motivo} onChange={(e) => setMotivo(e.target.value)} rows={2} placeholder="Ej: se cargó al socio equivocado" style={{ ...inputStyle, resize: "none" }} />
+        </Field>
+        <div className="flex gap-3" style={{ marginTop: 4 }}>
+          <button onClick={onClose} className="w-full" style={{ padding: "12px 0", borderRadius: 10, border: `1px solid ${COLORS.border}`, fontWeight: 600, background: "none" }}>Cancelar</button>
+          <button disabled={eliminando} onClick={confirmar} className="w-full" style={{ padding: "12px 0", borderRadius: 10, background: COLORS.red, color: "#fff", fontWeight: 700, border: "none", opacity: eliminando ? 0.6 : 1 }}>{eliminando ? "Eliminando..." : "Eliminar pago"}</button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// Una fila del registro de pagos eliminados (solo la ven los administradores).
+function FilaPagoEliminado({ e, nombre, ultima }) {
+  return (
+    <div className="px-4 py-3" style={{ borderBottom: ultima ? "none" : `1px solid ${COLORS.border}` }}>
+      <div className="flex items-center justify-between">
+        <div style={{ fontSize: 13.5, fontWeight: 600 }}>{nombre ? `${nombre} · ` : ""}{cap(MESES[e.mes - 1])} {e.anio}</div>
+        <div style={{ fontWeight: 700, color: COLORS.red, textDecoration: "line-through" }}>{formatMoney(e.monto)}</div>
+      </div>
+      <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>{e.medio} · pagado el {formatFechaISO(e.fecha)}</div>
+      <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>Eliminado el {formatFechaHora(e.en)}{e.por ? ` por ${e.por}` : ""}</div>
+      {e.motivo && <div style={{ fontSize: 12, marginTop: 2 }}>Motivo: {e.motivo}</div>}
+    </div>
   );
 }
 
@@ -661,7 +727,8 @@ function NuevoSocioModal({ socios, cuotaConfig, onClose, notify, onChanged }) {
 }
 
 /* ---------- ADMIN: Detalle de socio ---------- */
-function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
+function SocioDetail({ socio, socios, pagosEliminados = [], onBack, notify, onChanged }) {
+  const [pagoAEliminar, setPagoAEliminar] = useState(null);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({ dni: socio.dni, whatsapp: socio.whatsapp, domicilio: socio.domicilio, tipo: socio.tipo, cuota: socio.cuota, fechaAlta: socio.fechaAlta, eximido: socio.eximido });
   const [modoGrupo, setModoGrupo] = useState("nuevo");
@@ -760,6 +827,9 @@ function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
   };
 
   const pagosOrdenados = [...pagosEfectivos(socio, socios)].sort((a, b) => (a.fecha < b.fecha ? 1 : -1));
+  const duenoPagosId = socio.tipo === "Grupal" && !socio.esTitular && titular ? titular.id : socio.id;
+  const eliminadosDelSocio = pagosEliminados.filter((e) => e.socioId === duenoPagosId);
+  const nombrePagos = socio.tipo === "Grupal" && socio.grupoNombre ? socio.grupoNombre : `${socio.nombre} ${socio.apellido}`;
 
   return (
     <div style={{ paddingBottom: 24 }}>
@@ -881,11 +951,26 @@ function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
                 <div style={{ fontSize: 13.5, fontWeight: 600 }}>{cap(MESES[p.mes - 1])} {p.anio}</div>
                 <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>{p.medio} · {formatFechaISO(p.fecha)}</div>
               </div>
-              <div style={{ fontWeight: 700, color: COLORS.navy }}>{formatMoney(p.monto)}</div>
+              <div className="flex items-center gap-3">
+                <div style={{ fontWeight: 700, color: COLORS.navy }}>{formatMoney(p.monto)}</div>
+                {p.id !== undefined && (
+                  <button aria-label="Eliminar pago" onClick={() => setPagoAEliminar(p)} style={{ background: COLORS.redLight, color: COLORS.red, border: "none", borderRadius: 8, padding: 6, display: "flex" }}><Trash2 size={15} /></button>
+                )}
+              </div>
             </div>
           ))}
         </div>
       </div>
+
+      {eliminadosDelSocio.length > 0 && (
+        <div className="px-4 mt-3">
+          <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700 }}>Pagos eliminados</div>
+          <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginBottom: 6 }}>Solo lo ven los administradores.</div>
+          <div style={{ background: COLORS.surface, borderRadius: 12, overflow: "hidden" }}>
+            {eliminadosDelSocio.map((e, i) => <FilaPagoEliminado key={e.id} e={e} ultima={i === eliminadosDelSocio.length - 1} />)}
+          </div>
+        </div>
+      )}
 
       {socio.historialCambios.length > 0 && (
         <div className="px-4 mt-3">
@@ -919,12 +1004,13 @@ function SocioDetail({ socio, socios, onBack, notify, onChanged }) {
         </Modal>
       )}
       {showPago && <RegistrarPagoModal mesesDisponibles={mesesDisponiblesParaPago(socio, socios, info)} mesesAdelanto={mesesParaAdelantar(socio, socios)} cuotaSugerida={socio.cuota} onClose={() => setShowPago(false)} onConfirm={registrarPago} />}
+      {pagoAEliminar && <EliminarPagoModal pago={pagoAEliminar} nombre={nombrePagos} notify={notify} onClose={() => setPagoAEliminar(null)} onDone={onChanged} />}
     </div>
   );
 }
 
 /* ---------- ADMIN: Socios ---------- */
-function AdminSocios({ socios, cuotaConfig, notify, onChanged }) {
+function AdminSocios({ socios, cuotaConfig, pagosEliminados, notify, onChanged }) {
   const [selectedId, setSelectedId] = useState(null);
   const [showNew, setShowNew] = useState(false);
   const [showInactivos, setShowInactivos] = useState(false);
@@ -932,7 +1018,7 @@ function AdminSocios({ socios, cuotaConfig, notify, onChanged }) {
   const [tipoFiltro, setTipoFiltro] = useState("Todos");
 
   const selected = socios.find((s) => s.id === selectedId);
-  if (selected) return <SocioDetail socio={selected} socios={socios} onBack={() => setSelectedId(null)} notify={notify} onChanged={onChanged} />;
+  if (selected) return <SocioDetail socio={selected} socios={socios} pagosEliminados={pagosEliminados} onBack={() => setSelectedId(null)} notify={notify} onChanged={onChanged} />;
 
   const base = socios.filter((s) => (showInactivos ? s.estado === "Inactivo" : s.estado === "Activo"));
   const filtrados = base.filter((s) => {
@@ -1072,7 +1158,9 @@ function ReporteModal({ socios, onClose, notify }) {
 }
 
 /* ---------- ADMIN: Pagos ---------- */
-function AdminPagos({ socios, notify, onChanged }) {
+function AdminPagos({ socios, pagosEliminados = [], notify, onChanged }) {
+  const [pagoAEliminar, setPagoAEliminar] = useState(null);
+  const [showEliminados, setShowEliminados] = useState(false);
   const [mes, setMes] = useState(CURRENT_MONTH);
   const [anio, setAnio] = useState(CURRENT_YEAR);
   const [query, setQuery] = useState("");
@@ -1146,7 +1234,12 @@ function AdminPagos({ socios, notify, onChanged }) {
                 <div style={{ fontSize: 13.5, fontWeight: 600 }}>{socio.tipo === "Grupal" ? socio.grupoNombre : `${socio.nombre} ${socio.apellido}`}</div>
                 <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>N° {socio.id} · {pago.medio}</div>
               </div>
-              <div style={{ fontWeight: 700, color: COLORS.navy }}>{formatMoney(pago.monto)}</div>
+              <div className="flex items-center gap-3">
+                <div style={{ fontWeight: 700, color: COLORS.navy }}>{formatMoney(pago.monto)}</div>
+                {pago.id !== undefined && (
+                  <button aria-label="Eliminar pago" onClick={() => setPagoAEliminar({ pago, socio })} style={{ background: COLORS.redLight, color: COLORS.red, border: "none", borderRadius: 8, padding: 6, display: "flex" }}><Trash2 size={15} /></button>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -1179,8 +1272,30 @@ function AdminPagos({ socios, notify, onChanged }) {
             </div>
           ))}
         </div>
+
+        {pagosEliminados.length > 0 && (
+          <div style={{ marginTop: 16 }}>
+            <button onClick={() => setShowEliminados(!showEliminados)} className="w-full flex items-center justify-between" style={{ background: COLORS.surface, border: "none", borderRadius: 12, padding: "13px 16px", textAlign: "left" }}>
+              <div>
+                <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700 }}>Pagos eliminados ({pagosEliminados.length})</div>
+                <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>Solo lo ven los administradores.</div>
+              </div>
+              <ChevronRight size={18} color={COLORS.textMuted} style={{ transform: showEliminados ? "rotate(90deg)" : "none" }} />
+            </button>
+            {showEliminados && (
+              <div style={{ background: COLORS.surface, borderRadius: 12, overflow: "hidden", marginTop: 8 }}>
+                {pagosEliminados.slice(0, 60).map((e, i, arr) => {
+                  const s = socios.find((x) => x.id === e.socioId);
+                  const nombre = s ? (s.tipo === "Grupal" && s.grupoNombre ? s.grupoNombre : `${s.nombre} ${s.apellido}`) : `Socio N° ${e.socioId}`;
+                  return <FilaPagoEliminado key={e.id} e={e} nombre={nombre} ultima={i === arr.length - 1} />;
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
+      {pagoAEliminar && <EliminarPagoModal pago={pagoAEliminar.pago} nombre={pagoAEliminar.socio.tipo === "Grupal" && pagoAEliminar.socio.grupoNombre ? pagoAEliminar.socio.grupoNombre : `${pagoAEliminar.socio.nombre} ${pagoAEliminar.socio.apellido}`} notify={notify} onClose={() => setPagoAEliminar(null)} onDone={onChanged} />}
       {pagoTarget && <RegistrarPagoModal mesesDisponibles={mesesDisponiblesParaPago(pagoTarget, socios, estadoCuota(pagoTarget, socios), { mes, anio })} mesesAdelanto={mesesParaAdelantar(pagoTarget, socios)} cuotaSugerida={pagoTarget.cuota} onClose={() => setPagoTarget(null)} onConfirm={(mesesElegidos, montoPorMes, medio, fecha) => registrarPago(pagoTarget, mesesElegidos, montoPorMes, medio, fecha)} />}
       {showReporte && <ReporteModal socios={socios} onClose={() => setShowReporte(false)} notify={notify} />}
     </div>
@@ -1347,8 +1462,8 @@ function AdminShell({ data, notify, onChanged, onExit }) {
     <div style={{ minHeight: "100vh", background: COLORS.bg, display: "flex", flexDirection: "column", fontFamily: BODY_FONT }}>
       <div style={{ flex: 1 }}>
         {tab === "inicio" && <AdminDashboard socios={data.socios} onOpenNotif={() => setShowNotif(true)} onCompose={() => setShowCompose(true)} onExit={onExit} />}
-        {tab === "socios" && <AdminSocios socios={data.socios} cuotaConfig={data.cuotaConfig} notify={notify} onChanged={onChanged} />}
-        {tab === "pagos" && <AdminPagos socios={data.socios} notify={notify} onChanged={onChanged} />}
+        {tab === "socios" && <AdminSocios socios={data.socios} cuotaConfig={data.cuotaConfig} pagosEliminados={data.pagosEliminados} notify={notify} onChanged={onChanged} />}
+        {tab === "pagos" && <AdminPagos socios={data.socios} pagosEliminados={data.pagosEliminados} notify={notify} onChanged={onChanged} />}
         {tab === "config" && <AdminConfig cuotaConfig={data.cuotaConfig} adminUsers={data.adminUsers} notify={notify} onChanged={onChanged} />}
       </div>
       <BottomNav active={tab} onChange={setTab} items={[
@@ -1673,6 +1788,7 @@ function App() {
   const [adminUsers, setAdminUsers] = useState([]);
   const [solicitudes, setSolicitudes] = useState([]);
   const [notificaciones, setNotificaciones] = useState([]);
+  const [pagosEliminados, setPagosEliminados] = useState([]);
   const [toast, setToast] = useState("");
 
   const notify = (msg) => setToast(msg);
@@ -1710,7 +1826,7 @@ function App() {
   useEffect(() => { if (session) cargarPerfil(session); else { setPerfil(null); setDatosListos(false); } }, [session]);
 
   const recargarDatos = async () => {
-    const [sociosRes, pagosRes, tipoRes, cambiosRes, cuotaRes, adminsRes, solicRes, notifRes] = await Promise.all([
+    const [sociosRes, pagosRes, tipoRes, cambiosRes, cuotaRes, adminsRes, solicRes, notifRes, elimRes] = await Promise.all([
       supabase.from("socios").select("*").order("id"),
       supabase.from("pagos").select("*"),
       supabase.from("historial_tipo").select("*"),
@@ -1719,13 +1835,15 @@ function App() {
       supabase.from("perfiles").select("*").eq("rol", "admin"),
       supabase.from("solicitudes_domicilio").select("*").eq("estado", "Pendiente"),
       supabase.from("notificaciones").select("*").order("fecha", { ascending: false }),
+      // Registro de pagos eliminados: la base solo se lo entrega a los administradores (a los socios les devuelve vacío).
+      supabase.from("pagos_eliminados").select("*").order("eliminado_en", { ascending: false }),
     ]);
 
     const sociosMapeados = (sociosRes.data || []).map(mapSocioRow);
     const porId = Object.fromEntries(sociosMapeados.map((s) => [s.id, s]));
     (tipoRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].historialTipo.push({ tipo: r.tipo, desde: r.desde }); });
     (cambiosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].historialCambios.push({ fecha: r.fecha, campo: r.campo, anterior: r.anterior, nuevo: r.nuevo }); });
-    (pagosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].pagos.push({ mes: r.mes, anio: r.anio, monto: Number(r.monto), medio: r.medio, fecha: r.fecha }); });
+    (pagosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].pagos.push({ id: r.id, socioId: r.socio_id, mes: r.mes, anio: r.anio, monto: Number(r.monto), medio: r.medio, fecha: r.fecha }); });
     Object.values(porId).forEach((s) => { s.historialTipo.sort((a, b) => (a.desde < b.desde ? -1 : 1)); s.historialCambios.sort((a, b) => (a.fecha < b.fecha ? -1 : 1)); });
 
     setSocios(sociosMapeados);
@@ -1742,6 +1860,7 @@ function App() {
     }));
 
     setNotificaciones((notifRes.data || []).map((n) => ({ id: n.id, destinatarios: n.destinatarios, mensaje: n.mensaje, fecha: n.fecha })));
+    setPagosEliminados((elimRes.data || []).map((e) => ({ id: e.id, socioId: e.socio_id, mes: e.mes, anio: e.anio, monto: Number(e.monto), medio: e.medio, fecha: e.fecha, motivo: e.motivo, por: e.eliminado_por_nombre, en: e.eliminado_en })));
     setDatosListos(true);
   };
 
@@ -1752,7 +1871,7 @@ function App() {
   if (!perfil) return (<div style={{ fontFamily: BODY_FONT }}><ToastBar text={toast} /><VincularScreen onVinculado={() => cargarPerfil(session)} onSalir={salir} notify={notify} /></div>);
   if (!datosListos) return <PantallaCarga />;
 
-  const data = { socios, cuotaConfig, adminUsers, solicitudes, notificaciones };
+  const data = { socios, cuotaConfig, adminUsers, solicitudes, notificaciones, pagosEliminados };
 
   return (
     <div style={{ fontFamily: BODY_FONT }}>

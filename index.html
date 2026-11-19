@@ -1323,7 +1323,7 @@ function AddAdminModal({ onClose, notify, onChanged }) {
     <Modal title="Agregar administrador" onClose={onClose}>
       <div className="flex flex-col gap-3">
         <div style={{ fontSize: 12, color: COLORS.textMuted }}>
-          Primero creá el login en Supabase → Authentication → Users → "Add user", con el mail y contraseña de la nueva persona. Después pegá acá su UID (columna "UID" en esa misma lista).
+          Primero creá el login en Supabase → Authentication → Users → "Add user", con el mail y contraseña de la nueva persona. Después pegá acá su UID (columna "UID" en esa misma lista). El cargo (presidente, secretario, tesorero...) se asigna después, con el botón "Cargo" de la lista.
         </div>
         <Field label="UID del usuario (de Supabase)"><input style={inputStyle} value={uid} onChange={(e) => setUid(e.target.value)} /></Field>
         <Field label="Nombre completo"><input style={inputStyle} value={nombre} onChange={(e) => setNombre(e.target.value)} /></Field>
@@ -1335,9 +1335,10 @@ function AddAdminModal({ onClose, notify, onChanged }) {
   );
 }
 
-function AdminConfig({ cuotaConfig, adminUsers, notify, onChanged }) {
+function AdminConfig({ cuotaConfig, adminUsers, soyTesorero, notify, onChanged }) {
   const [cuotas, setCuotas] = useState(cuotaConfig);
   const [showAddAdmin, setShowAddAdmin] = useState(false);
+  const [cargoDe, setCargoDe] = useState(null);
   const [pwd, setPwd] = useState({ nueva: "", confirmar: "" });
 
   useEffect(() => { setCuotas(cuotaConfig); }, [cuotaConfig]);
@@ -1370,8 +1371,12 @@ function AdminConfig({ cuotaConfig, adminUsers, notify, onChanged }) {
 
         <Section title="Usuarios administradores" icon={ShieldCheck}>
           {adminUsers.map((u) => (
-            <div key={u.id} className="flex items-center justify-between" style={{ padding: "7px 0" }}>
-              <span style={{ fontSize: 13.5 }}>{u.nombre}</span>
+            <div key={u.id} className="flex items-center justify-between" style={{ padding: "7px 0", gap: 10 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13.5 }}>{u.nombre}</div>
+                <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>{[u.cargo, u.esTesorero ? "Permiso de tesorería" : null].filter(Boolean).join(" · ") || "Sin cargo asignado"}</div>
+              </div>
+              {soyTesorero && <BotonChico onClick={() => setCargoDe(u)}>Cargo</BotonChico>}
             </div>
           ))}
           <button onClick={() => setShowAddAdmin(true)} style={{ color: COLORS.navy, fontSize: 13, fontWeight: 700, marginTop: 6, display: "flex", alignItems: "center", gap: 5, background: "none", border: "none" }}>
@@ -1387,6 +1392,7 @@ function AdminConfig({ cuotaConfig, adminUsers, notify, onChanged }) {
         </Section>
       </div>
       {showAddAdmin && <AddAdminModal onClose={() => setShowAddAdmin(false)} notify={notify} onChanged={onChanged} />}
+      {cargoDe && <CargoModal admin={cargoDe} notify={notify} onClose={() => setCargoDe(null)} onChanged={onChanged} />}
     </div>
   );
 }
@@ -1453,7 +1459,638 @@ function ComponerNotifModal({ socios, onClose, notify, onChanged }) {
   );
 }
 
-function AdminShell({ data, notify, onChanged, onExit }) {
+/* =========================================================
+   ADMIN: Finanzas
+   Todos los administradores VEN las finanzas; solo el tesorero las MODIFICA
+   (la base de datos lo exige, no solo la pantalla).
+========================================================= */
+const COMPROBANTES = ["Factura", "Boleta", "Recibo", "Ticket", "Otro"];
+const CARGOS = ["Presidente", "Vicepresidente", "Secretario", "Tesorero", "Vocal"];
+const ACCION_LABEL = { Alta: "Alta", Modificacion: "Modificación", Eliminacion: "Eliminación" };
+
+const hoyISO = () => { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; };
+const r2 = (n) => Math.round(n * 100) / 100;
+const money2 = (n) => {
+  const v = Number(n || 0);
+  const abs = Math.abs(v);
+  const txt = abs.toLocaleString("es-AR", { minimumFractionDigits: Number.isInteger(abs) ? 0 : 2, maximumFractionDigits: 2 });
+  return (v < 0 ? "-" : "") + "$" + txt;
+};
+const netoPago = (p) => r2(p.monto - (p.comision || 0));
+const cuentaDeMedio = (cuentas, medio) => cuentas.find((c) => c.activa && c.recibeMedio === medio);
+const nombreCuenta = (cuentas, id) => { const c = cuentas.find((x) => x.id === id); return c ? c.nombre : "-"; };
+const diasHasta = (iso, hoy) => Math.round((new Date(iso + "T00:00:00") - new Date(hoy + "T00:00:00")) / 86400000);
+
+const mapCuenta = (r) => ({ id: r.id, nombre: r.nombre, tipo: r.tipo, recibeMedio: r.recibe_medio, saldoInicial: Number(r.saldo_inicial), fechaSaldo: r.fecha_saldo, activa: r.activa });
+const mapCategoria = (r) => ({ id: r.id, nombre: r.nombre, tipo: r.tipo, activa: r.activa });
+const mapMov = (r) => ({ id: r.id, tipo: r.tipo, fecha: r.fecha, monto: Number(r.monto), comision: Number(r.comision || 0), categoria: r.categoria, descripcion: r.descripcion || "", contraparte: r.contraparte || "", cuentaId: r.cuenta_id, comprobanteTipo: r.comprobante_tipo || "", comprobanteNro: r.comprobante_nro || "", estado: r.estado, vence: r.vence });
+const mapTransf = (r) => ({ id: r.id, fecha: r.fecha, cuentaOrigen: r.cuenta_origen, cuentaDestino: r.cuenta_destino, monto: Number(r.monto), nota: r.nota || "" });
+
+function enPeriodo(fechaISO, periodo) {
+  if (!fechaISO) return false;
+  const y = Number(fechaISO.slice(0, 4)), m = Number(fechaISO.slice(5, 7));
+  return y === periodo.anio && (periodo.mes === 0 || m === periodo.mes);
+}
+
+// Resumen de un mes (o de un año completo si periodo.mes === 0).
+// Las cuotas salen de los pagos de socios; lo demás, de los movimientos que carga el tesorero.
+function resumenFinanzas(pagos, movimientos, periodo) {
+  const cuotas = { bruto: 0, comision: 0, neto: 0, cantidad: 0, sinDato: 0, porMedio: { Efectivo: 0, Transferencia: 0, "Mercado Pago": 0 } };
+  pagos.filter((p) => enPeriodo(p.fecha, periodo)).forEach((p) => {
+    cuotas.bruto += p.monto;
+    cuotas.comision += p.comision || 0;
+    cuotas.cantidad += 1;
+    if (p.medio === "Mercado Pago" && (p.comision === null || p.comision === undefined)) cuotas.sinDato += 1;
+    if (cuotas.porMedio[p.medio] !== undefined) cuotas.porMedio[p.medio] += p.monto;
+  });
+  const otros = { bruto: 0, comision: 0, neto: 0 };
+  const egresos = { total: 0, porCategoria: {} };
+  movimientos.filter((m) => m.estado === "Pagado" && enPeriodo(m.fecha, periodo)).forEach((m) => {
+    if (m.tipo === "Ingreso") { otros.bruto += m.monto; otros.comision += m.comision; }
+    else { egresos.total += m.monto; egresos.porCategoria[m.categoria] = (egresos.porCategoria[m.categoria] || 0) + m.monto; }
+  });
+  cuotas.neto = cuotas.bruto - cuotas.comision;
+  otros.neto = otros.bruto - otros.comision;
+  const ingresosBrutos = cuotas.bruto + otros.bruto;
+  const comisiones = cuotas.comision + otros.comision;
+  const ingresosNetos = ingresosBrutos - comisiones;
+  const categorias = Object.entries(egresos.porCategoria).map(([nombre, total]) => ({ nombre, total: r2(total) })).sort((a, b) => b.total - a.total);
+  const redondear = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, typeof v === "number" ? r2(v) : v]));
+  return {
+    cuotas: { ...redondear(cuotas), porMedio: redondear(cuotas.porMedio) },
+    otros: redondear(otros),
+    egresos: { total: r2(egresos.total), categorias },
+    ingresosBrutos: r2(ingresosBrutos), comisiones: r2(comisiones), ingresosNetos: r2(ingresosNetos),
+    resultado: r2(ingresosNetos - egresos.total),
+  };
+}
+
+// Saldo actual de cada cuenta: saldo inicial + todo lo que entró y salió desde la fecha de ese saldo.
+function saldosCuentas(cuentas, pagos, movimientos, transferencias, hoy) {
+  return cuentas.map((c) => {
+    const desde = c.fechaSaldo;
+    let saldo = c.saldoInicial;
+    let porAcreditar = 0;
+    pagos.forEach((p) => {
+      const cuenta = cuentaDeMedio(cuentas, p.medio);
+      if (!cuenta || cuenta.id !== c.id || p.fecha < desde) return;
+      saldo += netoPago(p);
+      if (p.medio === "Mercado Pago" && p.acreditacion && p.acreditacion > hoy) porAcreditar += netoPago(p);
+    });
+    movimientos.forEach((m) => {
+      if (m.estado !== "Pagado" || m.cuentaId !== c.id || m.fecha < desde) return;
+      saldo += m.tipo === "Ingreso" ? m.monto - m.comision : -m.monto;
+    });
+    transferencias.forEach((t) => {
+      if (t.fecha < desde) return;
+      if (t.cuentaOrigen === c.id) saldo -= t.monto;
+      if (t.cuentaDestino === c.id) saldo += t.monto;
+    });
+    return { ...c, saldo: r2(saldo), porAcreditar: r2(porAcreditar) };
+  });
+}
+
+function detalleAuditoria(a) {
+  const d = a.despues || a.antes || {};
+  if (a.tabla === "fin_movimientos") return `${d.tipo} · ${d.categoria} · ${money2(d.monto)}`;
+  if (a.tabla === "fin_transferencias") return `Transferencia · ${money2(d.monto)}`;
+  if (a.tabla === "fin_cuentas") {
+    const cambio = a.antes && a.despues && Number(a.antes.saldo_inicial) !== Number(a.despues.saldo_inicial) ? ` · saldo inicial ${money2(a.antes.saldo_inicial)} → ${money2(a.despues.saldo_inicial)}` : "";
+    return `Cuenta ${d.nombre}${cambio}`;
+  }
+  return "";
+}
+
+function BotonChico({ children, onClick, color = COLORS.navy, fondo = COLORS.surface, disabled }) {
+  return <button disabled={disabled} onClick={onClick} style={{ background: fondo, color, border: `1px solid ${COLORS.border}`, borderRadius: 999, padding: "7px 13px", fontSize: 12.5, fontWeight: 700, opacity: disabled ? 0.6 : 1 }}>{children}</button>;
+}
+
+function SelectorPeriodo({ periodo, setPeriodo }) {
+  const mover = (d) => {
+    if (periodo.mes === 0) setPeriodo({ anio: periodo.anio + d, mes: 0 });
+    else { const n = shiftMonth(periodo.mes, periodo.anio, d); setPeriodo({ anio: n.anio, mes: n.mes }); }
+  };
+  const etiqueta = periodo.mes === 0 ? `Año ${periodo.anio}` : `${cap(MESES[periodo.mes - 1])} ${periodo.anio}`;
+  return (
+    <div className="flex items-center justify-between" style={{ background: COLORS.surface, borderRadius: 12, padding: "8px 10px" }}>
+      <button aria-label="Anterior" onClick={() => mover(-1)} style={{ background: "none", border: "none", color: COLORS.navy, display: "flex" }}><ChevronLeft size={22} /></button>
+      <div className="flex flex-col items-center">
+        <div style={{ fontFamily: DISPLAY_FONT, fontSize: 19, fontWeight: 700 }}>{etiqueta}</div>
+        <button onClick={() => setPeriodo({ anio: periodo.anio, mes: periodo.mes === 0 ? (periodo.anio === CURRENT_YEAR ? CURRENT_MONTH : 1) : 0 })} style={{ background: "none", border: "none", color: COLORS.navy, fontSize: 11.5, fontWeight: 700 }}>{periodo.mes === 0 ? "Ver por mes" : "Ver año completo"}</button>
+      </div>
+      <button aria-label="Siguiente" onClick={() => mover(1)} style={{ background: "none", border: "none", color: COLORS.navy, display: "flex" }}><ChevronRight size={22} /></button>
+    </div>
+  );
+}
+
+function Finanzas({ socios, soyTesorero, notify }) {
+  const [vista, setVista] = useState("resumen");
+  const [periodo, setPeriodo] = useState({ anio: CURRENT_YEAR, mes: CURRENT_MONTH });
+  const [datos, setDatos] = useState(null);
+  const [error, setError] = useState("");
+  const [modal, setModal] = useState(null);
+
+  const cargar = async () => {
+    const [c, k, m, t, a] = await Promise.all([
+      supabase.from("fin_cuentas").select("*").order("id"),
+      supabase.from("fin_categorias").select("*").order("nombre"),
+      supabase.from("fin_movimientos").select("*").order("fecha", { ascending: false }).order("id", { ascending: false }),
+      supabase.from("fin_transferencias").select("*").order("fecha", { ascending: false }).order("id", { ascending: false }),
+      supabase.from("fin_auditoria").select("*").order("fecha", { ascending: false }).limit(100),
+    ]);
+    const fallo = [c, k, m, t, a].find((r) => r.error);
+    if (fallo) { setError(fallo.error.message || "Error"); return; }
+    setError("");
+    setDatos({
+      cuentas: (c.data || []).map(mapCuenta),
+      categorias: (k.data || []).map(mapCategoria),
+      movimientos: (m.data || []).map(mapMov),
+      transferencias: (t.data || []).map(mapTransf),
+      auditoria: a.data || [],
+    });
+  };
+  useEffect(() => { cargar(); }, []);
+
+  if (error) {
+    return (
+      <div>
+        <TopHeader title="Finanzas" />
+        <div className="p-4">
+          <div style={{ background: COLORS.amberLight, color: COLORS.amber, borderRadius: 12, padding: 16, fontSize: 13.5, lineHeight: 1.45 }}>
+            <b>Falta un paso en Supabase.</b> Para usar Finanzas hay que ejecutar el archivo <b>schema-supabase-parte6.sql</b> en el SQL Editor.
+            <div style={{ fontSize: 11.5, marginTop: 8, opacity: 0.85 }}>Detalle técnico: {error}</div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  if (!datos) return (<div><TopHeader title="Finanzas" /><div className="p-4" style={{ color: COLORS.textMuted, fontSize: 13.5 }}>Cargando...</div></div>);
+
+  const hoy = hoyISO();
+  const pagos = socios.flatMap((s) => s.pagos);
+  const { cuentas, categorias, movimientos, transferencias, auditoria } = datos;
+  const resumen = resumenFinanzas(pagos, movimientos, periodo);
+  const saldos = saldosCuentas(cuentas, pagos, movimientos, transferencias, hoy);
+  const saldoTotal = r2(saldos.filter((c) => c.activa).reduce((acc, c) => acc + c.saldo, 0));
+  const pendientes = movimientos.filter((m) => m.estado === "Pendiente").sort((a, b) => (a.vence || "9999") < (b.vence || "9999") ? -1 : 1);
+  const cuentasActivas = cuentas.filter((c) => c.activa);
+  const etiquetaPeriodo = periodo.mes === 0 ? `${periodo.anio}` : `${cap(MESES[periodo.mes - 1])} ${periodo.anio}`;
+  const cerrar = () => setModal(null);
+  const alGuardar = async () => { await cargar(); };
+
+  const movsPeriodo = movimientos.filter((m) => enPeriodo(m.fecha, periodo));
+  const transfPeriodo = transferencias.filter((t) => enPeriodo(t.fecha, periodo));
+  const filas = [
+    ...movsPeriodo.map((m) => ({ clave: "m" + m.id, fecha: m.fecha, id: m.id, mov: m })),
+    ...transfPeriodo.map((t) => ({ clave: "t" + t.id, fecha: t.fecha, id: t.id, transf: t })),
+  ].sort((a, b) => (a.fecha === b.fecha ? b.id - a.id : a.fecha < b.fecha ? 1 : -1));
+
+  const Pestana = ({ k, label }) => (
+    <button onClick={() => setVista(k)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: vista === k ? COLORS.navy : COLORS.surface, color: vista === k ? "#fff" : COLORS.text, border: "none" }}>{label}</button>
+  );
+
+  return (
+    <div style={{ paddingBottom: 24 }}>
+      <TopHeader title="Finanzas" subtitle={soyTesorero ? "Tesorería: podés cargar y editar" : "Solo lectura: carga y edición, solo el tesorero"} />
+      <div className="p-4 flex flex-col gap-4">
+        <div className="flex gap-2">
+          <Pestana k="resumen" label="Resumen" />
+          <Pestana k="movimientos" label="Movimientos" />
+          <Pestana k="cuentas" label="Cuentas" />
+        </div>
+
+        {vista !== "cuentas" && <SelectorPeriodo periodo={periodo} setPeriodo={setPeriodo} />}
+
+        {vista === "resumen" && (
+          <>
+            <div style={{ background: COLORS.navy, color: "#fff", borderRadius: 14, padding: 16 }}>
+              <div style={{ fontSize: 12, opacity: 0.75 }}>Resultado de {etiquetaPeriodo}</div>
+              <div style={{ fontFamily: DISPLAY_FONT, fontSize: 36, fontWeight: 700, lineHeight: 1.1, color: resumen.resultado < 0 ? "#F3B8B1" : "#fff" }}>{money2(resumen.resultado)}</div>
+              <div className="flex" style={{ gap: 24, marginTop: 8 }}>
+                <div><div style={{ fontSize: 11, opacity: 0.7 }}>Ingresos netos</div><div style={{ fontWeight: 700 }}>{money2(resumen.ingresosNetos)}</div></div>
+                <div><div style={{ fontSize: 11, opacity: 0.7 }}>Egresos</div><div style={{ fontWeight: 700 }}>{money2(resumen.egresos.total)}</div></div>
+              </div>
+            </div>
+
+            <Section title="Ingresos" icon={DollarSign}>
+              <div>
+                <InfoRow label={`Cuotas de socios (${resumen.cuotas.cantidad})`} value={money2(resumen.cuotas.bruto)} />
+                {MEDIOS_CUOTA.map((mp) => resumen.cuotas.porMedio[mp] > 0 && (
+                  <div key={mp} className="flex items-center justify-between" style={{ padding: "3px 0 3px 12px", fontSize: 12, color: COLORS.textMuted }}><span>{mp}</span><span>{money2(resumen.cuotas.porMedio[mp])}</span></div>
+                ))}
+                <InfoRow label="Otros ingresos" value={money2(resumen.otros.bruto)} />
+                <InfoRow label="Comisiones descontadas" value={resumen.comisiones > 0 ? "-" + money2(resumen.comisiones) : "$0"} />
+                <InfoRow label="Ingresos netos" value={money2(resumen.ingresosNetos)} last />
+                {resumen.cuotas.sinDato > 0 && (
+                  <div style={{ fontSize: 11.5, color: COLORS.amber, marginTop: 8, lineHeight: 1.4 }}>{resumen.cuotas.sinDato} {resumen.cuotas.sinDato === 1 ? "cobro" : "cobros"} de Mercado Pago sin dato de comisión (anteriores a esta función): se cuentan sin descuento.</div>
+                )}
+              </div>
+            </Section>
+
+            <Section title="Egresos por categoría" icon={FileText}>
+              {resumen.egresos.categorias.length === 0 && <div style={{ fontSize: 13, color: COLORS.textMuted }}>No hay egresos cargados en este período.</div>}
+              {resumen.egresos.categorias.map((c) => (
+                <div key={c.nombre}>
+                  <div className="flex items-center justify-between" style={{ fontSize: 13.5 }}><span>{c.nombre}</span><b>{money2(c.total)}</b></div>
+                  <div style={{ height: 5, background: COLORS.bg, borderRadius: 3, marginTop: 3 }}><div style={{ height: 5, borderRadius: 3, background: COLORS.red, width: `${Math.max(3, Math.round((c.total / resumen.egresos.total) * 100))}%` }} /></div>
+                </div>
+              ))}
+            </Section>
+
+            <Section title="Por pagar" icon={Clock}>
+              {pendientes.length === 0 && <div style={{ fontSize: 13, color: COLORS.textMuted }}>No hay gastos pendientes.</div>}
+              {pendientes.map((m) => {
+                const d = m.vence ? diasHasta(m.vence, hoy) : null;
+                const color = d === null ? COLORS.textMuted : d < 0 ? COLORS.red : d <= 7 ? COLORS.amber : COLORS.textMuted;
+                const texto = d === null ? "Sin vencimiento" : d < 0 ? `Vencido hace ${-d} ${-d === 1 ? "día" : "días"}` : d === 0 ? "Vence hoy" : `Vence en ${d} ${d === 1 ? "día" : "días"} (${formatFechaISO(m.vence)})`;
+                return (
+                  <div key={m.id} className="flex items-center justify-between" style={{ gap: 10 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 600 }}>{m.categoria}{m.contraparte ? ` · ${m.contraparte}` : ""}</div>
+                      <div style={{ fontSize: 11.5, color, fontWeight: 600 }}>{texto}</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <b style={{ color: COLORS.red }}>{money2(m.monto)}</b>
+                      {soyTesorero && <BotonChico onClick={() => setModal({ tipo: "pagar", mov: m })}>Pagar</BotonChico>}
+                    </div>
+                  </div>
+                );
+              })}
+            </Section>
+
+            <Section title="Saldos hoy" icon={Wallet}>
+              {saldos.filter((c) => c.activa).map((c) => (
+                <div key={c.id}>
+                  <div className="flex items-center justify-between" style={{ fontSize: 13.5 }}><span>{c.nombre}</span><b style={{ color: c.saldo < 0 ? COLORS.red : COLORS.text }}>{money2(c.saldo)}</b></div>
+                  {c.porAcreditar > 0 && <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>Incluye {money2(c.porAcreditar)} que Mercado Pago todavía no acreditó</div>}
+                </div>
+              ))}
+              <div className="flex items-center justify-between" style={{ fontSize: 14, borderTop: `1px solid ${COLORS.border}`, paddingTop: 8 }}><b>Total</b><b>{money2(saldoTotal)}</b></div>
+            </Section>
+          </>
+        )}
+
+        {vista === "movimientos" && (
+          <>
+            {soyTesorero && (
+              <div className="flex gap-2">
+                <button onClick={() => setModal({ tipo: "mov", mov: null })} className="flex items-center justify-center gap-2" style={{ flex: 1, background: COLORS.green, color: "#fff", fontWeight: 700, padding: "11px 0", borderRadius: 10, border: "none" }}><Plus size={17} /> Movimiento</button>
+                <button onClick={() => setModal({ tipo: "transf" })} style={{ flex: 1, background: COLORS.surface, color: COLORS.navy, fontWeight: 700, padding: "11px 0", borderRadius: 10, border: `1px solid ${COLORS.border}` }}>Transferencia</button>
+              </div>
+            )}
+            <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>Las cuotas de los socios no aparecen acá: se ven en la pestaña Pagos y suman solas en el Resumen.</div>
+            {filas.length === 0 && <div style={{ fontSize: 13.5, color: COLORS.textMuted }}>No hay movimientos en este período.</div>}
+            {filas.length > 0 && (
+              <div style={{ background: COLORS.surface, borderRadius: 12, overflow: "hidden" }}>
+                {filas.map((f, i) => {
+                  const ultima = i === filas.length - 1;
+                  const borde = ultima ? "none" : `1px solid ${COLORS.border}`;
+                  if (f.transf) {
+                    const t = f.transf;
+                    return (
+                      <div key={f.clave} className="px-4 py-3" style={{ borderBottom: borde }}>
+                        <div className="flex items-center justify-between"><div style={{ fontSize: 13.5, fontWeight: 600 }}>Transferencia entre cuentas</div><b style={{ color: COLORS.navy }}>{money2(t.monto)}</b></div>
+                        <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>{nombreCuenta(cuentas, t.cuentaOrigen)} → {nombreCuenta(cuentas, t.cuentaDestino)} · {formatFechaISO(t.fecha)}{t.nota ? ` · ${t.nota}` : ""}</div>
+                      </div>
+                    );
+                  }
+                  const m = f.mov;
+                  const esIngreso = m.tipo === "Ingreso";
+                  return (
+                    <div key={f.clave} className="px-4 py-3" onClick={soyTesorero ? () => setModal({ tipo: "mov", mov: m }) : undefined} style={{ borderBottom: borde, cursor: soyTesorero ? "pointer" : "default" }}>
+                      <div className="flex items-center justify-between" style={{ gap: 10 }}>
+                        <div style={{ fontSize: 13.5, fontWeight: 600, minWidth: 0 }}>{m.categoria}{m.estado === "Pendiente" && <span style={{ marginLeft: 8, background: COLORS.amberLight, color: COLORS.amber, fontSize: 10.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999 }}>Pendiente</span>}</div>
+                        <b style={{ color: esIngreso ? COLORS.green : COLORS.red, whiteSpace: "nowrap" }}>{esIngreso ? "+" : "-"}{money2(m.monto)}</b>
+                      </div>
+                      <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>{formatFechaISO(m.fecha)}{m.cuentaId ? ` · ${nombreCuenta(cuentas, m.cuentaId)}` : ""}{m.contraparte ? ` · ${m.contraparte}` : ""}</div>
+                      {(m.descripcion || m.comprobanteNro) && <div style={{ fontSize: 12, marginTop: 2 }}>{m.descripcion}{m.comprobanteNro ? `${m.descripcion ? " · " : ""}${m.comprobanteTipo || "Comprobante"} ${m.comprobanteNro}` : ""}</div>}
+                      {esIngreso && m.comision > 0 && <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>Comisión descontada: {money2(m.comision)} (neto {money2(m.monto - m.comision)})</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
+
+        {vista === "cuentas" && (
+          <>
+            <div style={{ background: COLORS.surface, borderRadius: 12, overflow: "hidden" }}>
+              {saldos.map((c, i) => (
+                <div key={c.id} className="px-4 py-3" style={{ borderBottom: i === saldos.length - 1 ? "none" : `1px solid ${COLORS.border}`, opacity: c.activa ? 1 : 0.55 }}>
+                  <div className="flex items-center justify-between">
+                    <div style={{ fontSize: 14, fontWeight: 700 }}>{c.nombre}{!c.activa && " (inactiva)"}</div>
+                    <b style={{ color: c.saldo < 0 ? COLORS.red : COLORS.text }}>{money2(c.saldo)}</b>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>Saldo inicial {money2(c.saldoInicial)} al {formatFechaISO(c.fechaSaldo)}{c.recibeMedio ? ` · recibe cuotas por ${c.recibeMedio.toLowerCase()}` : ""}</div>
+                  {soyTesorero && <button onClick={() => setModal({ tipo: "cuenta", cuenta: c })} style={{ marginTop: 6, background: "none", border: "none", color: COLORS.navy, fontWeight: 700, fontSize: 12.5, padding: 0 }}>Editar</button>}
+                </div>
+              ))}
+            </div>
+            {soyTesorero && <BotonChico onClick={() => setModal({ tipo: "cuenta", cuenta: null })}>+ Agregar cuenta</BotonChico>}
+
+            <Section title="Registro de cambios" icon={ShieldCheck}>
+              <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>Todo lo que se carga, cambia o elimina en Finanzas queda acá. Lo ven solo los administradores.</div>
+              {auditoria.length === 0 && <div style={{ fontSize: 13, color: COLORS.textMuted }}>Todavía no hay cambios.</div>}
+              {auditoria.map((a) => (
+                <div key={a.id} style={{ borderTop: `1px solid ${COLORS.border}`, paddingTop: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: a.accion === "Eliminacion" ? COLORS.red : COLORS.text }}>{ACCION_LABEL[a.accion] || a.accion}: {detalleAuditoria(a)}</div>
+                  <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>{formatFechaHora(a.fecha)}{a.usuario_nombre ? ` · ${a.usuario_nombre}` : ""}</div>
+                </div>
+              ))}
+            </Section>
+          </>
+        )}
+      </div>
+
+      {modal && modal.tipo === "mov" && <MovimientoModal mov={modal.mov} cuentas={cuentasActivas} categorias={categorias} notify={notify} onClose={cerrar} onDone={alGuardar} />}
+      {modal && modal.tipo === "pagar" && <PagarMovimientoModal mov={modal.mov} cuentas={cuentasActivas} notify={notify} onClose={cerrar} onDone={alGuardar} />}
+      {modal && modal.tipo === "transf" && <TransferenciaModal cuentas={cuentasActivas} notify={notify} onClose={cerrar} onDone={alGuardar} />}
+      {modal && modal.tipo === "cuenta" && <CuentaModal cuenta={modal.cuenta} notify={notify} onClose={cerrar} onDone={alGuardar} />}
+    </div>
+  );
+}
+
+const MEDIOS_CUOTA = ["Efectivo", "Transferencia", "Mercado Pago"];
+
+function MovimientoModal({ mov, cuentas, categorias, notify, onClose, onDone }) {
+  const editando = !!mov;
+  const [f, setF] = useState(() => mov
+    ? { tipo: mov.tipo, fecha: mov.fecha, monto: String(mov.monto), comision: mov.comision ? String(mov.comision) : "", categoria: mov.categoria, nuevaCategoria: "", descripcion: mov.descripcion, contraparte: mov.contraparte, cuentaId: mov.cuentaId ? String(mov.cuentaId) : "", comprobanteTipo: mov.comprobanteTipo, comprobanteNro: mov.comprobanteNro, estado: mov.estado, vence: mov.vence || "" }
+    : { tipo: "Egreso", fecha: hoyISO(), monto: "", comision: "", categoria: "", nuevaCategoria: "", descripcion: "", contraparte: "", cuentaId: "", comprobanteTipo: "", comprobanteNro: "", estado: "Pagado", vence: "" });
+  const [guardando, setGuardando] = useState(false);
+  const [confirmarBorrar, setConfirmarBorrar] = useState(false);
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const esIngreso = f.tipo === "Ingreso";
+  const nombres = categorias.filter((c) => c.tipo === f.tipo && c.activa).map((c) => c.nombre);
+  const opciones = !f.categoria || f.categoria === "__nueva" || nombres.includes(f.categoria) ? nombres : [f.categoria, ...nombres];
+  const usaNueva = f.categoria === "__nueva";
+
+  const guardar = async () => {
+    const monto = Number(f.monto);
+    const comision = esIngreso ? Number(f.comision || 0) : 0;
+    const categoria = usaNueva ? f.nuevaCategoria.trim() : f.categoria;
+    if (!f.fecha) { notify("Elegí la fecha."); return; }
+    if (!(monto > 0)) { notify("Ingresá un monto mayor a cero."); return; }
+    if (comision < 0 || comision > monto) { notify("La comisión no puede ser mayor al monto."); return; }
+    if (!categoria) { notify("Elegí una categoría."); return; }
+    if (f.estado === "Pagado" && !f.cuentaId) { notify(esIngreso ? "Elegí en qué cuenta se cobró." : "Elegí de qué cuenta se pagó."); return; }
+    setGuardando(true);
+    if (usaNueva && !nombres.includes(categoria)) {
+      const { error: errCat } = await supabase.from("fin_categorias").upsert({ nombre: categoria, tipo: f.tipo, activa: true }, { onConflict: "nombre,tipo" });
+      if (errCat) { setGuardando(false); notify("Error: " + errCat.message); return; }
+    }
+    const fila = {
+      tipo: f.tipo, fecha: f.fecha, monto, comision, categoria,
+      descripcion: f.descripcion.trim() || null, contraparte: f.contraparte.trim() || null,
+      cuenta_id: f.cuentaId ? Number(f.cuentaId) : null,
+      comprobante_tipo: f.comprobanteTipo || null, comprobante_nro: f.comprobanteNro.trim() || null,
+      estado: f.estado, vence: f.estado === "Pendiente" && f.vence ? f.vence : null,
+    };
+    const { error } = editando ? await supabase.from("fin_movimientos").update(fila).eq("id", mov.id) : await supabase.from("fin_movimientos").insert(fila);
+    setGuardando(false);
+    if (error) { notify("Error: " + error.message); return; }
+    notify(editando ? "Movimiento actualizado." : "Movimiento guardado.");
+    await onDone();
+    onClose();
+  };
+
+  const borrar = async () => {
+    setGuardando(true);
+    const { error } = await supabase.from("fin_movimientos").delete().eq("id", mov.id);
+    setGuardando(false);
+    if (error) { notify("Error: " + error.message); return; }
+    notify("Movimiento eliminado. Quedó en el registro de cambios.");
+    await onDone();
+    onClose();
+  };
+
+  return (
+    <Modal title={editando ? "Editar movimiento" : "Nuevo movimiento"} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div className="flex gap-2">
+          {["Egreso", "Ingreso"].map((t) => (
+            <button key={t} onClick={() => setF((x) => ({ ...x, tipo: t, categoria: "", nuevaCategoria: "" }))} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: f.tipo === t ? (t === "Ingreso" ? COLORS.green : COLORS.red) : COLORS.bg, color: f.tipo === t ? "#fff" : COLORS.text, border: "none" }}>{t === "Egreso" ? "Gasto (egreso)" : "Ingreso"}</button>
+          ))}
+        </div>
+        <div className="flex gap-3">
+          <Field label={f.estado === "Pagado" ? "Fecha" : "Fecha del comprobante"}><input type="date" style={inputStyle} value={f.fecha} onChange={(e) => set("fecha", e.target.value)} /></Field>
+          <Field label="Monto"><input type="number" inputMode="decimal" step="0.01" style={inputStyle} value={f.monto} onChange={(e) => set("monto", e.target.value)} /></Field>
+        </div>
+        {esIngreso && (
+          <Field label="Comisión descontada (si hubo)"><input type="number" inputMode="decimal" step="0.01" style={inputStyle} value={f.comision} onChange={(e) => set("comision", e.target.value)} placeholder="0" /></Field>
+        )}
+        <Field label="Categoría">
+          <select style={inputStyle} value={f.categoria} onChange={(e) => set("categoria", e.target.value)}>
+            <option value="">Elegir...</option>
+            {opciones.map((n) => <option key={n} value={n}>{n}</option>)}
+            <option value="__nueva">+ Nueva categoría...</option>
+          </select>
+        </Field>
+        {usaNueva && <Field label="Nombre de la nueva categoría"><input style={inputStyle} value={f.nuevaCategoria} onChange={(e) => set("nuevaCategoria", e.target.value)} /></Field>}
+        <Field label={esIngreso ? "Origen (quién pagó)" : "Proveedor"}><input style={inputStyle} value={f.contraparte} onChange={(e) => set("contraparte", e.target.value)} /></Field>
+        <Field label="Descripción"><input style={inputStyle} value={f.descripcion} onChange={(e) => set("descripcion", e.target.value)} /></Field>
+        <div className="flex gap-3">
+          <Field label="Comprobante">
+            <select style={inputStyle} value={f.comprobanteTipo} onChange={(e) => set("comprobanteTipo", e.target.value)}>
+              <option value="">Sin comprobante</option>
+              {COMPROBANTES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </Field>
+          <Field label="Número"><input style={inputStyle} value={f.comprobanteNro} onChange={(e) => set("comprobanteNro", e.target.value)} placeholder="0001-00001234" /></Field>
+        </div>
+        <Field label="Estado">
+          <div className="flex gap-2">
+            {["Pagado", "Pendiente"].map((e) => (
+              <button key={e} onClick={() => set("estado", e)} style={{ flex: 1, padding: "9px 0", borderRadius: 8, fontWeight: 700, fontSize: 13, background: f.estado === e ? COLORS.navy : COLORS.bg, color: f.estado === e ? "#fff" : COLORS.text, border: "none" }}>{e === "Pagado" ? (esIngreso ? "Cobrado" : "Pagado") : (esIngreso ? "Por cobrar" : "Por pagar")}</button>
+            ))}
+          </div>
+        </Field>
+        {f.estado === "Pendiente" && <Field label="Vence el"><input type="date" style={inputStyle} value={f.vence} onChange={(e) => set("vence", e.target.value)} /></Field>}
+        <Field label={f.estado === "Pendiente" ? (esIngreso ? "Cuenta donde se cobrará (opcional)" : "Cuenta de la que se pagará (opcional)") : (esIngreso ? "Cuenta donde se cobró" : "Cuenta de la que se pagó")}>
+          <select style={inputStyle} value={f.cuentaId} onChange={(e) => set("cuentaId", e.target.value)}>
+            <option value="">Elegir...</option>
+            {cuentas.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+          </select>
+        </Field>
+        <button disabled={guardando} onClick={guardar} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none", opacity: guardando ? 0.6 : 1 }}>{guardando ? "Guardando..." : "Guardar"}</button>
+        {editando && !confirmarBorrar && (
+          <button onClick={() => setConfirmarBorrar(true)} style={{ background: "none", border: "none", color: COLORS.red, fontWeight: 700, fontSize: 13 }}>Eliminar movimiento</button>
+        )}
+        {editando && confirmarBorrar && (
+          <div style={{ background: COLORS.redLight, borderRadius: 10, padding: 12 }}>
+            <div style={{ fontSize: 13, color: COLORS.red, marginBottom: 8 }}>¿Seguro? El movimiento se elimina y queda anotado en el registro de cambios.</div>
+            <div className="flex gap-3">
+              <button onClick={() => setConfirmarBorrar(false)} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: `1px solid ${COLORS.border}`, background: COLORS.surface, fontWeight: 600 }}>No</button>
+              <button disabled={guardando} onClick={borrar} style={{ flex: 1, padding: "10px 0", borderRadius: 10, border: "none", background: COLORS.red, color: "#fff", fontWeight: 700 }}>Sí, eliminar</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function PagarMovimientoModal({ mov, cuentas, notify, onClose, onDone }) {
+  const [fecha, setFecha] = useState(hoyISO());
+  const [cuentaId, setCuentaId] = useState(mov.cuentaId ? String(mov.cuentaId) : "");
+  const [guardando, setGuardando] = useState(false);
+  const esIngreso = mov.tipo === "Ingreso";
+
+  const confirmar = async () => {
+    if (!cuentaId) { notify("Elegí la cuenta."); return; }
+    setGuardando(true);
+    const { error } = await supabase.from("fin_movimientos").update({ estado: "Pagado", fecha, cuenta_id: Number(cuentaId), vence: null }).eq("id", mov.id);
+    setGuardando(false);
+    if (error) { notify("Error: " + error.message); return; }
+    notify(esIngreso ? "Marcado como cobrado." : "Marcado como pagado.");
+    await onDone();
+    onClose();
+  };
+
+  return (
+    <Modal title={esIngreso ? "Registrar cobro" : "Registrar pago"} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div style={{ background: COLORS.bg, borderRadius: 10, padding: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 700 }}>{mov.categoria}{mov.contraparte ? ` · ${mov.contraparte}` : ""}</div>
+          <div style={{ fontSize: 13 }}>{money2(mov.monto)}{mov.comprobanteNro ? ` · ${mov.comprobanteTipo || "Comprobante"} ${mov.comprobanteNro}` : ""}</div>
+        </div>
+        <Field label={esIngreso ? "Fecha de cobro" : "Fecha de pago"}><input type="date" style={inputStyle} value={fecha} onChange={(e) => setFecha(e.target.value)} /></Field>
+        <Field label="Cuenta">
+          <select style={inputStyle} value={cuentaId} onChange={(e) => setCuentaId(e.target.value)}>
+            <option value="">Elegir...</option>
+            {cuentas.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+          </select>
+        </Field>
+        <button disabled={guardando} onClick={confirmar} style={{ background: COLORS.green, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none", opacity: guardando ? 0.6 : 1 }}>{guardando ? "Guardando..." : "Confirmar"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function TransferenciaModal({ cuentas, notify, onClose, onDone }) {
+  const [f, setF] = useState({ fecha: hoyISO(), origen: "", destino: "", monto: "", nota: "" });
+  const [guardando, setGuardando] = useState(false);
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+
+  const guardar = async () => {
+    const monto = Number(f.monto);
+    if (!f.origen || !f.destino) { notify("Elegí la cuenta de origen y la de destino."); return; }
+    if (f.origen === f.destino) { notify("El origen y el destino tienen que ser distintos."); return; }
+    if (!(monto > 0)) { notify("Ingresá un monto mayor a cero."); return; }
+    setGuardando(true);
+    const { error } = await supabase.from("fin_transferencias").insert({ fecha: f.fecha, cuenta_origen: Number(f.origen), cuenta_destino: Number(f.destino), monto, nota: f.nota.trim() || null });
+    setGuardando(false);
+    if (error) { notify("Error: " + error.message); return; }
+    notify("Transferencia guardada.");
+    await onDone();
+    onClose();
+  };
+
+  return (
+    <Modal title="Transferencia entre cuentas" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div style={{ fontSize: 12, color: COLORS.textMuted }}>Para pasar plata de una cuenta a otra, por ejemplo de Mercado Pago al banco. No es ingreso ni gasto: solo mueve el saldo.</div>
+        <Field label="Sale de">
+          <select style={inputStyle} value={f.origen} onChange={(e) => set("origen", e.target.value)}><option value="">Elegir...</option>{cuentas.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select>
+        </Field>
+        <Field label="Entra en">
+          <select style={inputStyle} value={f.destino} onChange={(e) => set("destino", e.target.value)}><option value="">Elegir...</option>{cuentas.map((c) => <option key={c.id} value={c.id}>{c.nombre}</option>)}</select>
+        </Field>
+        <div className="flex gap-3">
+          <Field label="Fecha"><input type="date" style={inputStyle} value={f.fecha} onChange={(e) => set("fecha", e.target.value)} /></Field>
+          <Field label="Monto"><input type="number" inputMode="decimal" step="0.01" style={inputStyle} value={f.monto} onChange={(e) => set("monto", e.target.value)} /></Field>
+        </div>
+        <Field label="Nota (opcional)"><input style={inputStyle} value={f.nota} onChange={(e) => set("nota", e.target.value)} /></Field>
+        <button disabled={guardando} onClick={guardar} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none", opacity: guardando ? 0.6 : 1 }}>{guardando ? "Guardando..." : "Guardar transferencia"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function CuentaModal({ cuenta, notify, onClose, onDone }) {
+  const editando = !!cuenta;
+  const [nombre, setNombre] = useState(cuenta ? cuenta.nombre : "");
+  const [tipo, setTipo] = useState(cuenta ? cuenta.tipo : "Banco");
+  const [saldo, setSaldo] = useState(cuenta ? String(cuenta.saldoInicial) : "0");
+  const [fechaSaldo, setFechaSaldo] = useState(cuenta ? cuenta.fechaSaldo : hoyISO());
+  const [activa, setActiva] = useState(cuenta ? cuenta.activa : true);
+  const [guardando, setGuardando] = useState(false);
+
+  const guardar = async () => {
+    if (!nombre.trim()) { notify("Escribí el nombre de la cuenta."); return; }
+    if (saldo === "" || isNaN(Number(saldo))) { notify("Ingresá el saldo inicial (puede ser 0)."); return; }
+    setGuardando(true);
+    const fila = { nombre: nombre.trim(), saldo_inicial: Number(saldo), fecha_saldo: fechaSaldo };
+    const { error } = editando
+      ? await supabase.from("fin_cuentas").update({ ...fila, activa }).eq("id", cuenta.id)
+      : await supabase.from("fin_cuentas").insert({ ...fila, tipo });
+    setGuardando(false);
+    if (error) { notify("Error: " + error.message); return; }
+    notify(editando ? "Cuenta actualizada." : "Cuenta agregada.");
+    await onDone();
+    onClose();
+  };
+
+  return (
+    <Modal title={editando ? "Editar cuenta" : "Nueva cuenta"} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <Field label="Nombre"><input style={inputStyle} value={nombre} onChange={(e) => setNombre(e.target.value)} /></Field>
+        {!editando && (
+          <Field label="Tipo">
+            <select style={inputStyle} value={tipo} onChange={(e) => setTipo(e.target.value)}>{["Efectivo", "Banco", "Mercado Pago", "Otra"].map((t) => <option key={t} value={t}>{t}</option>)}</select>
+          </Field>
+        )}
+        <div className="flex gap-3">
+          <Field label="Saldo inicial"><input type="number" inputMode="decimal" step="0.01" style={inputStyle} value={saldo} onChange={(e) => setSaldo(e.target.value)} /></Field>
+          <Field label="Saldo al día"><input type="date" style={inputStyle} value={fechaSaldo} onChange={(e) => setFechaSaldo(e.target.value)} /></Field>
+        </div>
+        <div style={{ fontSize: 11.5, color: COLORS.textMuted, lineHeight: 1.4 }}>Es lo que había en la cuenta en esa fecha. El saldo actual suma y resta todo lo que se mueve desde ese día en adelante. Si cambiás estos datos, queda anotado en el registro de cambios.</div>
+        {editando && (
+          <label className="flex items-center gap-2" style={{ fontSize: 13.5 }}><input type="checkbox" checked={activa} onChange={(e) => setActiva(e.target.checked)} /> Cuenta activa</label>
+        )}
+        <button disabled={guardando} onClick={guardar} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none", opacity: guardando ? 0.6 : 1 }}>{guardando ? "Guardando..." : "Guardar"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function CargoModal({ admin, notify, onClose, onChanged }) {
+  const [cargo, setCargo] = useState(admin.cargo || "");
+  const [tesorero, setTesorero] = useState(!!admin.esTesorero);
+  const [guardando, setGuardando] = useState(false);
+
+  const guardar = async () => {
+    setGuardando(true);
+    const { data, error } = await supabase.rpc("asignar_cargo", { p_user_id: admin.id, p_cargo: cargo, p_tesorero: tesorero });
+    setGuardando(false);
+    if (error) { notify("Error: " + error.message); return; }
+    if (data && data.ok === false) { notify(data.error || "No se pudo guardar."); return; }
+    notify("Cargo actualizado.");
+    await onChanged();
+    onClose();
+  };
+
+  return (
+    <Modal title={`Cargo de ${admin.nombre}`} onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <Field label="Cargo">
+          <select style={inputStyle} value={cargo} onChange={(e) => setCargo(e.target.value)}>
+            <option value="">Sin cargo</option>
+            {CARGOS.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </Field>
+        <label className="flex items-start gap-2" style={{ fontSize: 13.5, lineHeight: 1.35 }}>
+          <input type="checkbox" style={{ marginTop: 3 }} checked={tesorero} onChange={(e) => setTesorero(e.target.checked)} />
+          <span>Permiso de tesorería: puede cargar, editar y eliminar movimientos de Finanzas. Sin este permiso, ve todo pero no modifica nada.</span>
+        </label>
+        <button disabled={guardando} onClick={guardar} style={{ background: COLORS.navy, color: "#fff", fontWeight: 700, padding: "12px 0", borderRadius: 10, border: "none", opacity: guardando ? 0.6 : 1 }}>{guardando ? "Guardando..." : "Guardar"}</button>
+      </div>
+    </Modal>
+  );
+}
+
+function AdminShell({ data, perfil, notify, onChanged, onExit }) {
   const [tab, setTab] = useState("inicio");
   const [showNotif, setShowNotif] = useState(false);
   const [showCompose, setShowCompose] = useState(false);
@@ -1464,12 +2101,14 @@ function AdminShell({ data, notify, onChanged, onExit }) {
         {tab === "inicio" && <AdminDashboard socios={data.socios} onOpenNotif={() => setShowNotif(true)} onCompose={() => setShowCompose(true)} onExit={onExit} />}
         {tab === "socios" && <AdminSocios socios={data.socios} cuotaConfig={data.cuotaConfig} pagosEliminados={data.pagosEliminados} notify={notify} onChanged={onChanged} />}
         {tab === "pagos" && <AdminPagos socios={data.socios} pagosEliminados={data.pagosEliminados} notify={notify} onChanged={onChanged} />}
-        {tab === "config" && <AdminConfig cuotaConfig={data.cuotaConfig} adminUsers={data.adminUsers} notify={notify} onChanged={onChanged} />}
+        {tab === "finanzas" && <Finanzas socios={data.socios} soyTesorero={!!perfil.es_tesorero} notify={notify} />}
+        {tab === "config" && <AdminConfig cuotaConfig={data.cuotaConfig} adminUsers={data.adminUsers} soyTesorero={!!perfil.es_tesorero} notify={notify} onChanged={onChanged} />}
       </div>
       <BottomNav active={tab} onChange={setTab} items={[
         { key: "inicio", label: "Inicio", icon: Home },
         { key: "socios", label: "Socios", icon: Users },
         { key: "pagos", label: "Pagos", icon: CreditCard },
+        { key: "finanzas", label: "Finanzas", icon: Wallet },
         { key: "config", label: "Config", icon: Settings },
       ]} />
       {showNotif && <NotifAdminModal solicitudes={data.solicitudes} onClose={() => setShowNotif(false)} notify={notify} onChanged={onChanged} />}
@@ -1843,7 +2482,7 @@ function App() {
     const porId = Object.fromEntries(sociosMapeados.map((s) => [s.id, s]));
     (tipoRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].historialTipo.push({ tipo: r.tipo, desde: r.desde }); });
     (cambiosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].historialCambios.push({ fecha: r.fecha, campo: r.campo, anterior: r.anterior, nuevo: r.nuevo }); });
-    (pagosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].pagos.push({ id: r.id, socioId: r.socio_id, mes: r.mes, anio: r.anio, monto: Number(r.monto), medio: r.medio, fecha: r.fecha }); });
+    (pagosRes.data || []).forEach((r) => { if (porId[r.socio_id]) porId[r.socio_id].pagos.push({ id: r.id, socioId: r.socio_id, mes: r.mes, anio: r.anio, monto: Number(r.monto), medio: r.medio, fecha: r.fecha, comision: r.comision === null || r.comision === undefined ? null : Number(r.comision), acreditacion: r.acreditacion || null }); });
     Object.values(porId).forEach((s) => { s.historialTipo.sort((a, b) => (a.desde < b.desde ? -1 : 1)); s.historialCambios.sort((a, b) => (a.fecha < b.fecha ? -1 : 1)); });
 
     setSocios(sociosMapeados);
@@ -1852,7 +2491,10 @@ function App() {
     (cuotaRes.data || []).forEach((r) => { cc[r.tipo] = Number(r.valor); });
     setCuotaConfig(cc);
 
-    setAdminUsers((adminsRes.data || []).map((a) => ({ id: a.user_id, nombre: a.nombre || "Administrador" })));
+    setAdminUsers((adminsRes.data || []).map((a) => ({ id: a.user_id, nombre: a.nombre || "Administrador", cargo: a.cargo || "", esTesorero: !!a.es_tesorero })));
+    // Si cambiaron mis propios permisos (por ejemplo, el tesorero se los pasó a otra persona), los tomo de acá.
+    const mio = (adminsRes.data || []).find((a) => session && a.user_id === session.user.id);
+    if (mio) setPerfil(mio);
 
     setSolicitudes((solicRes.data || []).map((s) => {
       const soc = sociosMapeados.find((x) => x.id === s.socio_id);
@@ -1877,7 +2519,7 @@ function App() {
     <div style={{ fontFamily: BODY_FONT }}>
       <ToastBar text={toast} />
       {perfil.rol === "admin" ? (
-        <AdminShell data={data} notify={notify} onChanged={recargarDatos} onExit={salir} />
+        <AdminShell data={data} perfil={perfil} notify={notify} onChanged={recargarDatos} onExit={salir} />
       ) : perfil.rol === "socio" ? (
         <UserShell socio={socios.find((s) => s.id === perfil.socio_id)} data={data} notify={notify} onChanged={recargarDatos} onExit={salir} />
       ) : (

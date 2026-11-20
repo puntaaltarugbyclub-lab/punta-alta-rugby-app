@@ -321,7 +321,7 @@ function RegistrarPagoModal({ mesesDisponibles, mesesAdelanto = [], cuotaSugerid
   const [seleccionados, setSeleccionados] = useState(primero ? [`${primero.anio}-${primero.mes}`] : []);
   const [montoPorMes, setMontoPorMes] = useState(cuotaSugerida);
   const [medio, setMedio] = useState("Efectivo");
-  const [fecha, setFecha] = useState(new Date().toISOString().slice(0, 10));
+  const [fecha, setFecha] = useState(hoyISO());
   const [guardando, setGuardando] = useState(false);
 
   const toggle = (key) => setSeleccionados(seleccionados.includes(key) ? seleccionados.filter((k) => k !== key) : [...seleccionados, key]);
@@ -624,7 +624,7 @@ function AdminDashboard({ socios, onOpenNotif, onCompose, onExit }) {
 /* ---------- ADMIN: Nuevo socio ---------- */
 function NuevoSocioModal({ socios, cuotaConfig, onClose, notify, onChanged }) {
   const nextId = socios.length ? Math.max(...socios.map((s) => s.id)) + 1 : 1;
-  const [form, setForm] = useState({ id: nextId, nombre: "", apellido: "", dni: "", whatsapp: "", domicilio: "", tipo: "Individual", grupoNombre: "", fechaAlta: new Date().toISOString().slice(0, 10), cuota: cuotaConfig.Individual, eximido: false });
+  const [form, setForm] = useState({ id: nextId, nombre: "", apellido: "", dni: "", whatsapp: "", domicilio: "", tipo: "Individual", grupoNombre: "", fechaAlta: hoyISO(), cuota: cuotaConfig.Individual, eximido: false });
   const [modoGrupo, setModoGrupo] = useState("nuevo"); // "nuevo" | "existente"
   const [grupoElegido, setGrupoElegido] = useState("");
   const [guardando, setGuardando] = useState(false);
@@ -745,7 +745,7 @@ function SocioDetail({ socio, socios, pagosEliminados = [], onBack, notify, onCh
 
   const guardar = async () => {
     const cambios = [];
-    const hoy = new Date().toISOString().slice(0, 10);
+    const hoy = hoyISO();
     if (form.dni !== socio.dni) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "DNI", anterior: socio.dni, nuevo: form.dni });
     if (form.whatsapp !== socio.whatsapp) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "WhatsApp", anterior: socio.whatsapp, nuevo: form.whatsapp });
     if (form.domicilio !== socio.domicilio) cambios.push({ socio_id: socio.id, fecha: hoy, campo: "Domicilio", anterior: socio.domicilio, nuevo: form.domicilio });
@@ -781,7 +781,7 @@ function SocioDetail({ socio, socios, pagosEliminados = [], onBack, notify, onCh
   };
 
   const confirmarBaja = async () => {
-    const hoy = new Date().toISOString().slice(0, 10);
+    const hoy = hoyISO();
     await supabase.from("socios").update({ estado: "Inactivo" }).eq("id", socio.id);
     await supabase.from("historial_cambios").insert({ socio_id: socio.id, fecha: hoy, campo: "Estado", anterior: "Activo", nuevo: "Inactivo (baja)" });
     notify(`${socio.nombre} ${socio.apellido} fue dado de baja.`);
@@ -1108,7 +1108,9 @@ function ReporteModal({ socios, onClose, notify }) {
     const porTipo = { Individual: 0, Grupal: 0, Adherente: 0 };
     socios.forEach((s) => {
       if (s.tipo === "Grupal" && !s.esTitular) return;
-      s.pagos.forEach((p) => { if (set.has(`${p.anio}-${p.mes}`)) { total += p.monto; cantidad += 1; porTipo[s.tipo] += p.monto; } });
+      // El dinero se cuenta en el período en que se COBRÓ (fecha del pago),
+      // aunque el pago sea de meses atrasados o adelantados.
+      s.pagos.forEach((p) => { if (set.has(`${Number(p.fecha.slice(0, 4))}-${Number(p.fecha.slice(5, 7))}`)) { total += p.monto; cantidad += 1; porTipo[s.tipo] += p.monto; } });
     });
     setResultado({ total, cantidad, porTipo });
   };
@@ -1140,9 +1142,10 @@ function ReporteModal({ socios, onClose, notify }) {
 
         {resultado && (
           <div style={{ background: COLORS.bg, borderRadius: 12, padding: 14, marginTop: 4 }}>
-            <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Total recaudado</div>
+            <div style={{ fontSize: 12.5, color: COLORS.textMuted }}>Total recaudado en el período</div>
             <div style={{ fontFamily: DISPLAY_FONT, fontSize: 28, fontWeight: 700, color: COLORS.navy }}>{formatMoney(resultado.total)}</div>
             <div style={{ fontSize: 12.5, color: COLORS.textMuted, marginTop: 4 }}>{resultado.cantidad} pagos registrados</div>
+            <div style={{ fontSize: 11.5, color: COLORS.textMuted, marginTop: 4, lineHeight: 1.4 }}>Cuenta el dinero según el día en que se cobró, aunque el pago sea de meses atrasados o adelantados.</div>
             <div style={{ height: 1, background: COLORS.border, margin: "10px 0" }} />
             {Object.entries(resultado.porTipo).map(([k, v]) => (
               <div key={k} className="flex items-center justify-between" style={{ fontSize: 13, padding: "3px 0" }}><span>{k}</span><span style={{ fontWeight: 700 }}>{formatMoney(v)}</span></div>
@@ -1187,6 +1190,8 @@ function AdminPagos({ socios, pagosEliminados = [], notify, onChanged }) {
   });
   const cobrado = pagados.reduce((acc, p) => acc + p.pago.monto, 0);
   const pendienteMonto = pendientes.reduce((acc, s) => acc + s.cuota, 0);
+  // Dinero que realmente entró en el mes (por fecha de cobro), incluye pagos atrasados y adelantados.
+  const recibidoEnElMes = socios.reduce((acc, s) => acc + s.pagos.reduce((a, p) => a + (Number(p.fecha.slice(0, 4)) === anio && Number(p.fecha.slice(5, 7)) === mes ? p.monto : 0), 0), 0);
   const deudores = activos.filter(relevantes).filter(matchQuery).map((s) => ({ s, info: estadoCuota(s, socios) })).filter((x) => x.info.estado === "Deudor");
 
   const registrarPago = async (socio, mesesElegidos, montoPorMes, medio, fecha) => {
@@ -1223,6 +1228,9 @@ function AdminPagos({ socios, pagosEliminados = [], notify, onChanged }) {
           <div style={{ fontFamily: DISPLAY_FONT, fontSize: 24, fontWeight: 700, color: COLORS.amber }}>{formatMoney(pendienteMonto)}</div>
         </div>
       </div>
+      <div className="px-4 mb-2" style={{ fontSize: 12, color: COLORS.textMuted, lineHeight: 1.4 }}>
+        Los dos cuadros de arriba son de las cuotas de {cap(MESES[mes - 1])}. Dinero que realmente se cobró en {cap(MESES[mes - 1])} (con pagos atrasados y adelantados): <b style={{ color: COLORS.text }}>{formatMoney(recibidoEnElMes)}</b>
+      </div>
 
       <div className="px-4 mt-2">
         <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Pagos registrados</div>
@@ -1232,7 +1240,7 @@ function AdminPagos({ socios, pagosEliminados = [], notify, onChanged }) {
             <div key={socio.id} className="flex items-center justify-between px-4 py-3" style={{ borderBottom: i < pagados.length - 1 ? `1px solid ${COLORS.border}` : "none" }}>
               <div>
                 <div style={{ fontSize: 13.5, fontWeight: 600 }}>{socio.tipo === "Grupal" ? socio.grupoNombre : `${socio.nombre} ${socio.apellido}`}</div>
-                <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>N° {socio.id} · {pago.medio}</div>
+                <div style={{ fontSize: 11.5, color: COLORS.textMuted }}>N° {socio.id} · {pago.medio} · cobrado el {formatFechaISO(pago.fecha)}</div>
               </div>
               <div className="flex items-center gap-3">
                 <div style={{ fontWeight: 700, color: COLORS.navy }}>{formatMoney(pago.monto)}</div>
